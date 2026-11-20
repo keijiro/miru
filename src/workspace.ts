@@ -24,7 +24,6 @@ export interface View {
   x: number
   y: number
   z: number
-  orientation: [x: number, y: number, z: number, w: number]
   width: number
   // Derive the height from the media until the view is resized.
   height?: number
@@ -39,7 +38,6 @@ export interface View {
 }
 
 type SavedView = Omit<View, 'browser'>
-export type WindowPose = Pick<View, 'x' | 'y' | 'z' | 'orientation'>
 
 interface BrowserState {
   listing: DirectoryListing
@@ -101,15 +99,6 @@ function restoreSamplePath(path: string) {
     : path
 }
 
-function restoreOrientation(value: unknown): View['orientation'] {
-  if (Array.isArray(value) && value.length === 4 && value.every(Number.isFinite)) {
-    const [x, y, z, w] = value
-    const length = Math.hypot(x, y, z, w)
-    if (length > 0 && Number.isFinite(length)) return [x / length, y / length, z / length, w / length]
-  }
-  return [0, 0, 0, 1]
-}
-
 function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: string): View | undefined {
   if (!view || typeof view.id !== 'string') return
   const { media } = view
@@ -125,7 +114,6 @@ function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: st
     x: finite(view.x, 0, -100, 100),
     y: finite(view.y, 0, -100, 100),
     z: finite(view.z, -windowDefaults.depth, -limits.far, limits.far),
-    orientation: restoreOrientation(view.orientation),
     width: finite(view.width, windowDefaults.width, limits.minWidth, limits.maxWidth),
     height: typeof view.height === 'number' && Number.isFinite(view.height)
       ? clamp(view.height, limits.minHeight, limits.maxHeight) : media ? undefined : windowDefaults.height,
@@ -427,9 +415,9 @@ export class Workspace {
     }
   }
 
-  create(pose: WindowPose) {
+  create(position: Pick<View, 'x' | 'y' | 'z'>) {
     const view: View = {
-      ...mediaDefaults, ...pose, id: crypto.randomUUID(), media: null, directory: '', browser: this.#root,
+      ...mediaDefaults, ...position, id: crypto.randomUUID(), media: null, directory: '', browser: this.#root,
       width: windowDefaults.width, height: windowDefaults.height,
     }
     this.#publish({ views: [...this.#state.views, view], selected: view.id }, true)

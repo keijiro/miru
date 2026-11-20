@@ -1,6 +1,6 @@
 import {
-  BufferAttribute, BufferGeometry, Color, Fog, GridHelper, Line, LineBasicMaterial, Matrix4,
-  Mesh, MeshBasicMaterial, PerspectiveCamera, Quaternion, Ray, Raycaster, Scene,
+  BufferAttribute, BufferGeometry, Color, Fog, GridHelper, Line, LineBasicMaterial,
+  Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
   SphereGeometry, Vector2, Vector3, WebGLRenderer, type XRTargetRaySpace,
 } from 'three'
 import { mint, SceneWindow, windowTitleHeight, type Face, type Grab, type Hit, type Target } from './scene-window'
@@ -19,7 +19,7 @@ interface Pointer {
   beam: Line<BufferGeometry, LineBasicMaterial>
   cursor: Mesh<SphereGeometry, MeshBasicMaterial>
   source?: XRInputSource
-  grab?: ActiveGrab & { button: 'select' | 'squeeze' }
+  grab?: ActiveGrab
 }
 
 export class WorkspaceScene {
@@ -27,6 +27,7 @@ export class WorkspaceScene {
   #scene = new Scene()
   #xrCamera = new PerspectiveCamera(55, 1, 0.04, 80)
   #desktopCamera = new PerspectiveCamera(55, 1, 0.04, 80)
+  #viewerPosition = new Vector3()
   #floor = new GridHelper(70, 70, '#396068', '#263746')
   #windows = new Map<string, SceneWindow>()
   #pointers: Pointer[]
@@ -73,6 +74,7 @@ export class WorkspaceScene {
   async start(session: XRSession) {
     this.#finishMouse(false)
     this.#previousFrame = 0
+    this.#viewerPosition.set(0, 0, 0)
     await this.#renderer.xr.setSession(session)
   }
 
@@ -148,7 +150,7 @@ export class WorkspaceScene {
       this.workspace.create({
         x: clamp(position.x, min.x + halfWidth, max.x - halfWidth),
         y: clamp(position.y, min.y + halfHeight, Math.max(min.y + halfHeight, max.y - halfHeight - windowTitleHeight)),
-        z: -depth, orientation: [0, 0, 0, 1],
+        z: -depth,
       })
       return
     }
@@ -162,7 +164,7 @@ export class WorkspaceScene {
 
   #mouseMove = (event: PointerEvent) => {
     if (this.#mouse?.id === event.pointerId) {
-      this.#mouse.action.update(this.#mouseRay(event), 0, this.#desktopCamera.quaternion)
+      this.#mouse.action.update(this.#mouseRay(event), 0)
     }
   }
 
@@ -217,18 +219,12 @@ export class WorkspaceScene {
       pointer.source = undefined
       this.#resetPointer(pointer)
     })
-    controller.addEventListener('selectstart', () => this.#press(pointer, 'select'))
-    controller.addEventListener('selectend', () => {
-      if (pointer.grab?.button === 'select') this.#finishGrab(pointer, controller.visible)
-    })
-    controller.addEventListener('squeezestart', () => this.#press(pointer, 'squeeze'))
-    controller.addEventListener('squeezeend', () => {
-      if (pointer.grab?.button === 'squeeze') this.#finishGrab(pointer, controller.visible)
-    })
+    controller.addEventListener('selectstart', () => this.#press(pointer))
+    controller.addEventListener('selectend', () => this.#finishGrab(pointer, controller.visible))
     return pointer
   }
 
-  #press(pointer: Pointer, button: 'select' | 'squeeze') {
+  #press(pointer: Pointer) {
     if (!pointer.source || !pointer.controller.visible || pointer.grab) return
     // Use the same filtered pose as the displayed ray.
     if (!pointer.beam.visible) this.#filterPose(pointer, 1)
@@ -236,23 +232,14 @@ export class WorkspaceScene {
     const hit = this.#hit(pointer)
     const target = hit && this.#targets.get(hit.object)
     if (!hit || !target) {
-      if (button === 'select') this.#createWindow(this.#raycaster.ray)
+      const { x, y, z } = this.#raycaster.ray.at(windowDefaults.depth, new Vector3())
+      this.workspace.create({ x, y, z })
       return
     }
     const { panel } = target
     if (this.#pointers.some(other => other.grab?.panel === panel)) return
-    const action = button === 'squeeze' ? panel.grab(hit, pointer.beam.quaternion) : target.press(hit, this.#raycaster.ray)
-    if (action) pointer.grab = { panel, action, button }
-  }
-
-  #createWindow(ray: Ray) {
-    const position = ray.at(windowDefaults.depth, new Vector3())
-    const viewer = this.#renderer.xr.getCamera().getWorldPosition(new Vector3())
-    const rotation = new Matrix4().lookAt(viewer, position, new Vector3(0, 1, 0))
-    this.workspace.create({
-      x: position.x, y: position.y, z: position.z,
-      orientation: new Quaternion().setFromRotationMatrix(rotation).toArray(),
-    })
+    const action = target.press(hit, this.#raycaster.ray)
+    if (action) pointer.grab = { panel, action }
   }
 
   #end = () => { void this.#renderer.xr.getSession()?.end().catch(() => {}) }
@@ -297,14 +284,24 @@ export class WorkspaceScene {
       // Desktop windows created at the same depth still need a deterministic stacking order.
       panel.group.renderOrder = immersive ? 0 : focused ? views.length + 1 : index + 1
       panel.sync(view, focused, runtime, immersive)
+      if (immersive) panel.group.lookAt(this.#viewerPosition)
       for (const target of panel.targets) if (target.mesh.visible) this.#targets.set(target.mesh, target)
     }
     this.#scene.updateMatrixWorld()
   }
 
-  #frame = (time: number) => {
+  #frame = (time: number, frame?: XRFrame) => {
     const immersive = this.#renderer.xr.isPresenting
     if (!immersive && this.#renderer.xr.getSession()) return
+    if (immersive && frame) {
+      // Use the headset center in the same reference space as the controller rays.
+      const referenceSpace = this.#renderer.xr.getReferenceSpace()
+      const pose = referenceSpace && frame.getViewerPose(referenceSpace)
+      if (pose) {
+        const { x, y, z } = pose.transform.position
+        this.#viewerPosition.set(x, y, z)
+      }
+    }
     this.#sync(immersive)
     if (immersive) this.#updatePointers(time)
     else this.#updateDesktopCamera()
@@ -325,7 +322,7 @@ export class WorkspaceScene {
       const axes = pointer.source.gamepad?.axes
       const y = axes?.[3] ?? axes?.[1] ?? 0
       const depth = Math.abs(y) > 0.2 ? y * dt * 2.2 : 0
-      pointer.grab?.action.update(this.#raycaster.ray, depth, pointer.beam.quaternion)
+      pointer.grab?.action.update(this.#raycaster.ray, depth)
       const positions = pointer.beam.geometry.getAttribute('position')
       positions.setZ(1, -(hit?.distance ?? windowDefaults.depth))
       positions.needsUpdate = true

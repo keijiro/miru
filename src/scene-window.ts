@@ -1,6 +1,6 @@
 import {
   BackSide, CanvasTexture, DoubleSide, Group, Mesh, MeshBasicMaterial, Plane, PlaneGeometry,
-  Quaternion, Ray, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection,
+  SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Quaternion, type Ray,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import {
@@ -40,7 +40,7 @@ const compactControlsWidth = 570
 export type Face = Mesh<PlaneGeometry, MeshBasicMaterial>
 export type Hit = Intersection<Face>
 export interface Grab {
-  update(ray: Ray, depth: number, orientation: Quaternion): void
+  update(ray: Ray, depth: number): void
   finish?(commit: boolean): void
 }
 export interface Target {
@@ -260,7 +260,7 @@ export class SceneWindow {
     this.#hitbox.material.visible = false
     this.#message.mesh.visible = false
     this.#media.visible = false
-    // Keep the view visible and grabbable from the back after rotation.
+    // A controller can reach the back of a window even when it faces the headset.
     this.#back.material.side = BackSide
     this.#hitbox.material.side = DoubleSide
     this.targets = [
@@ -356,35 +356,6 @@ export class SceneWindow {
     if (this.#controls.mesh.visible) this.#paintControls(runtime)
   }
 
-  grab(hit: Hit, orientation: Quaternion): Grab {
-    this.#focus()
-    const view = this.#view
-    const inverse = orientation.clone().invert()
-    const previousPosition = this.group.position.clone()
-    const previousOrientation = this.group.quaternion.clone()
-    const offset = previousPosition.clone().sub(hit.point).applyQuaternion(inverse)
-    const relativeOrientation = inverse.multiply(previousOrientation)
-    const position = new Vector3()
-    const rotatedOffset = new Vector3()
-    const next = new Quaternion()
-    let distance = hit.distance
-    return {
-      update: (ray, depth, current) => {
-        if (depth) distance = clamp(distance + depth, limits.near, limits.far)
-        ray.at(distance, position).add(rotatedOffset.copy(offset).applyQuaternion(current))
-        position.set(clamp(position.x, -100, 100), clamp(position.y, -100, 100), clamp(position.z, -limits.far, limits.far))
-        next.copy(current).multiply(relativeOrientation).normalize()
-        if (previousPosition.distanceToSquared(position) < 1e-8 && next.angleTo(previousOrientation) < 0.0001) return
-        previousPosition.copy(position)
-        previousOrientation.copy(next)
-        this.workspace.patch(view.id, {
-          x: position.x, y: position.y, z: position.z,
-          orientation: [next.x, next.y, next.z, next.w],
-        })
-      },
-    }
-  }
-
   dispose() {
     this.group.removeFromParent()
     this.#texture?.dispose()
@@ -407,8 +378,7 @@ export class SceneWindow {
     const bottomOutset = controlsVisible ? frameBorder : resizeOutset
     // Present saved windows head-on when no headset is in use, including views behind the XR origin.
     this.group.position.set(view.x, view.y, this.#immersive ? view.z : -Math.max(limits.near, Math.abs(view.z)))
-    if (this.#immersive) this.group.quaternion.fromArray(view.orientation)
-    else this.group.quaternion.identity()
+    if (!this.#immersive) this.group.quaternion.identity()
     const frameWidth = width + frameBorder * 2
     const frameHeight = height + title + frameBorder * 2
     place(this.#back, frameWidth, frameHeight, title / 2)
@@ -480,6 +450,23 @@ export class SceneWindow {
 
   #focus() { this.workspace.select(this.#view.id) }
 
+  #moveInVr(hit: Hit): Grab {
+    const previousPosition = this.group.position.clone()
+    const offset = previousPosition.clone().sub(hit.point)
+    const position = new Vector3()
+    let distance = hit.distance
+    return {
+      update: (ray, depth) => {
+        if (depth) distance = clamp(distance + depth, limits.near, limits.far)
+        ray.at(distance, position).add(offset)
+        position.set(clamp(position.x, -100, 100), clamp(position.y, -100, 100), clamp(position.z, -limits.far, limits.far))
+        if (previousPosition.distanceToSquared(position) < 1e-8) return
+        previousPosition.copy(position)
+        this.workspace.patch(this.id, { x: position.x, y: position.y, z: position.z })
+      },
+    }
+  }
+
   #resize(hit: Hit, x: number, y: number) {
     const browser = !this.#view.media ? this.#browser : undefined
     const view = browser ? { ...this.#view, ...this.#size } : this.#view
@@ -521,7 +508,8 @@ export class SceneWindow {
       if (ray.direction.dot(normal) >= 0) return
       const pressed = panel.press((local.x / panel.mesh.scale.x + 0.5) * panel.width,
         (height / 2 + panel.mesh.scale.y - local.y) / panel.mesh.scale.y * panel.height)
-      if (pressed || this.#immersive) return
+      if (pressed) return
+      if (this.#immersive) return this.#moveInVr(hit)
       return xyDrag(view, hit.point, this.group.quaternion, (dx, dy) => {
         this.workspace.patch(view.id, { x: clamp(view.x + dx, -100, 100), y: clamp(view.y + dy, -100, 100) })
       })
@@ -557,10 +545,11 @@ export class SceneWindow {
     const media = runtime.snapshot()
     if (Math.abs(y - seekY) > 15 || media.duration <= 0 || x < seekX - 15 || x > width - seekX + 15) return
     const plane = panelPlane(hit.point, this.group.quaternion)
+    const inverse = panel.mesh.matrixWorld.clone().invert()
     const point = new Vector3()
     const update = (current: Ray) => {
       if (!current.intersectPlane(plane, point)) return
-      const pos = (panel.mesh.worldToLocal(point).x + 0.5) * width
+      const pos = (point.applyMatrix4(inverse).x + 0.5) * width
       runtime.seek(clamp((pos - seekX) / (width - 2 * seekX), 0, 1) * media.duration)
     }
     update(ray)
