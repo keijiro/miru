@@ -1,0 +1,34 @@
+diff --git a/build/three.module.js b/build/three.module.js
+index 4dc5bcedc5dc72dabb37a3da0a98bbaa05321a8a..30793cd4af4180a535e3d917ba269fc526e92573 100644
+--- a/build/three.module.js
++++ b/build/three.module.js
+@@ -14167,9 +14167,9 @@ class WebXRManager extends EventDispatcher {
+ 				renderer.getSize( currentSize );
+ 
+ 
+-				// Check that the browser implements the necessary APIs to use an
+-				// XRProjectionLayer rather than an XRWebGLLayer
+-				const supportsLayers = supportsGlBinding && 'createProjectionLayer' in XRWebGLBinding.prototype;
++				// Use XRWebGLLayer unless composition layers are enabled for this session.
++				const supportsLayers = session.enabledFeatures?.includes( 'layers' ) &&
++					supportsGlBinding && 'createProjectionLayer' in XRWebGLBinding.prototype;
+ 
+ 				if ( ! supportsLayers ) {
+ 
+diff --git a/src/renderers/webxr/WebXRManager.js b/src/renderers/webxr/WebXRManager.js
+index dc5e2ddb47544da4cc711a5e0c7793c22117c6ca..67df94608832b00b5e544e8a6c0eda53f63a53f6 100644
+--- a/src/renderers/webxr/WebXRManager.js
++++ b/src/renderers/webxr/WebXRManager.js
+@@ -433,9 +433,9 @@ class WebXRManager extends EventDispatcher {
+ 				renderer.getSize( currentSize );
+ 
+ 
+-				// Check that the browser implements the necessary APIs to use an
+-				// XRProjectionLayer rather than an XRWebGLLayer
+-				const supportsLayers = supportsGlBinding && 'createProjectionLayer' in XRWebGLBinding.prototype;
++				// Use XRWebGLLayer unless composition layers are enabled for this session.
++				const supportsLayers = session.enabledFeatures?.includes( 'layers' ) &&
++					supportsGlBinding && 'createProjectionLayer' in XRWebGLBinding.prototype;
+ 
+ 				if ( ! supportsLayers ) {
+ 

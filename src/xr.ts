@@ -528,7 +528,11 @@ export class XRWorkspace {
   #destroyed = false
 
   constructor(private readonly workspace: Workspace, container: HTMLElement) {
-    this.#renderer = new WebGLRenderer({ antialias: true, alpha: false })
+    const canvas = document.createElement('canvas')
+    // Request XR compatibility up front to avoid context loss when entering PC VR.
+    const context = canvas.getContext('webgl2', { xrCompatible: true, antialias: true, alpha: false })
+    if (!context) throw new Error('Could not create a WebGL 2 context for VR mode.')
+    this.#renderer = new WebGLRenderer({ canvas, context })
     this.#renderer.xr.enabled = true
     this.#renderer.xr.setReferenceSpaceType('local')
     this.#renderer.setSize(Math.max(window.innerWidth, 1), Math.max(window.innerHeight, 1), false)

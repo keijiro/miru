@@ -197,6 +197,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  three@0.187.0: 9e22ea2df30848be2bf428f0155887b95198640176cb57d3a1bb019d519f49c5
+
 importers:
 
   .:
@@ -212,7 +215,7 @@ importers:
         version: 19.3.1(react@19.3.1)
       three:
         specifier: ^0.187.0
-        version: 0.187.0
+        version: 0.187.0(patch_hash=9e22ea2df30848be2bf428f0155887b95198640176cb57d3a1bb019d519f49c5)
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -852,7 +855,7 @@ snapshots:
 
   source-map-js@1.2.4: {}
 
-  three@0.187.0: {}
+  three@0.187.0(patch_hash=9e22ea2df30848be2bf428f0155887b95198640176cb57d3a1bb019d519f49c5): {}
 
   tinyglobby@0.2.17:
     dependencies:

@@ -2,3 +2,5 @@
 minimumReleaseAgeExclude:
   - lucide-react@1.76.0
   - source-map-js@1.2.4
+patchedDependencies:
+  three@0.187.0: patches/three@0.187.0.patch
