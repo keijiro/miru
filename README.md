@@ -4,17 +4,18 @@ miru is a local media viewer for arranging and viewing multiple images and video
 
 ## Getting started
 
-You need Node.js 20.19 or later in the 20.x series, or Node.js 22.12 or later. Both `ffmpeg` and `ffprobe` must be on your `PATH`.
+You need Node.js 20.19 or later in the 20.x series, or Node.js 22.12 or later. Use the pnpm version pinned in `package.json`. Both `ffmpeg` and `ffprobe` must be on your `PATH`.
 
+- To install pnpm, run `npm install --global pnpm@12.21.0`.
 - On macOS with Homebrew, run `brew install ffmpeg`.
 - On Ubuntu or Debian under WSL2, run `sudo apt install ffmpeg`.
 
 ```sh
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173/) in your browser. With the default configuration, the workspace opens one sample video and one still image on first launch. To run the production build locally, stop the development server, then run `npm run build` followed by `npm run preview`. The local Vite server serves the media files.
+Open [http://localhost:5173](http://localhost:5173/) in your browser. With the default configuration, the workspace opens one sample video and one still image on first launch. To run the production build locally, stop the development server, then run `pnpm build` followed by `pnpm preview`. The local Vite server serves the media files.
 
 ## Library configuration
 
