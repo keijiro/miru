@@ -1,0 +1,4 @@
+{
+  "mediaRoot": "./samples",
+  "thumbnailCache": "./.miru-cache"
+}
