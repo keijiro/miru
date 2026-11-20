@@ -1,10 +1,9 @@
-import { Box, CircleAlert, Glasses, RefreshCw, X } from 'lucide-react'
+import { Box, CircleAlert, Glasses, Maximize, RefreshCw, X } from 'lucide-react'
 import { createRoot } from 'react-dom/client'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Desktop } from './desktop'
 import { fetchDirectory } from './media-api'
+import { WorkspaceScene } from './scene'
 import { Workspace } from './workspace'
-import type { XRWorkspace } from './xr'
 import './style.css'
 
 function Brand() {
@@ -22,10 +21,31 @@ function App({ workspace }: { workspace: Workspace }) {
   const [available, setAvailable] = useState(false)
   const [active, setActive] = useState(false)
   const [pending, setPending] = useState(false)
+  const [ready, setReady] = useState(false)
+  const [sceneError, setSceneError] = useState('')
   const [error, setError] = useState('')
-  const output = useRef<HTMLDivElement>(null)
+  const stage = useRef<HTMLElement>(null)
   const session = useRef<XRSession | null>(null)
-  const scene = useRef<XRWorkspace | null>(null)
+  const scene = useRef<WorkspaceScene | null>(null)
+
+  useEffect(() => {
+    let renderer: WorkspaceScene
+    try {
+      renderer = new WorkspaceScene(workspace, stage.current!)
+    } catch {
+      setSceneError('Could not start the workspace. WebGL 2 is required.')
+      return
+    }
+    scene.current = renderer
+    setReady(true)
+    return () => {
+      scene.current = null
+      const xrSession = session.current
+      session.current = null
+      if (xrSession) void xrSession.end().catch(() => {}).finally(() => renderer.dispose())
+      else renderer.dispose()
+    }
+  }, [workspace])
 
   useEffect(() => {
     const xr = navigator.xr
@@ -41,7 +61,8 @@ function App({ workspace }: { workspace: Workspace }) {
   }, [])
 
   async function toggleVr() {
-    if (pending) return
+    const renderer = scene.current
+    if (pending || !renderer) return
     setError('')
     if (session.current) {
       try {
@@ -55,20 +76,18 @@ function App({ workspace }: { workspace: Workspace }) {
     setPending(true)
     try {
       const xrSession = await navigator.xr.requestSession('immersive-vr')
+      if (scene.current !== renderer) {
+        await xrSession.end()
+        return
+      }
       session.current = xrSession
-      xrSession.addEventListener('end', () => queueMicrotask(() => {
+      xrSession.addEventListener('end', () => {
         if (session.current !== xrSession) return
         session.current = null
-        scene.current?.dispose()
-        scene.current = null
         setActive(false)
-        setPending(false)
         workspace.save()
-      }), { once: true })
-      const { XRWorkspace } = await import('./xr')
-      if (session.current !== xrSession || !output.current) return
-      scene.current = new XRWorkspace(workspace, output.current)
-      await scene.current.start(xrSession)
+      }, { once: true })
+      await renderer.start(xrSession)
       if (session.current === xrSession) setActive(true)
     } catch (failure) {
       if (session.current) await session.current.end().catch(() => {})
@@ -84,17 +103,25 @@ function App({ workspace }: { workspace: Workspace }) {
     <div className="app">
       <header className="app-header">
         <Brand />
-        <button type="button" className="vr-toggle" role="switch" aria-checked={active} aria-label="VR mode"
-          disabled={pending || (!available && !active)}
-          title={available ? 'Toggle VR mode' : 'VR sessions are unavailable in this browser'}
-          onClick={() => void toggleVr()}>
-          <Glasses size={20} /><span>VR mode</span><span className="switch-track" aria-hidden="true" />
-        </button>
+        <div className="app-actions">
+          <button type="button" className="fit-button" disabled={!ready || active || pending || !state.views.length}
+            onClick={() => scene.current?.fit()}><Maximize size={16} />Fit all</button>
+          <button type="button" className="vr-toggle" role="switch" aria-checked={active} aria-label="VR mode"
+            disabled={!ready || pending || (!available && !active)}
+            title={available ? 'Toggle VR mode' : 'VR sessions are unavailable in this browser'}
+            onClick={() => void toggleVr()}>
+            <Glasses size={20} /><span>VR mode</span><span className="switch-track" aria-hidden="true" />
+          </button>
+        </div>
       </header>
-      <div className="app-body">
-        <Desktop workspace={workspace} state={state} />
-      </div>
-      <div className={`xr-output${active ? ' is-active' : ''}`} ref={output} aria-hidden="true" />
+      <main className="stage" ref={stage}>
+        {sceneError && <p className="stage-error" role="alert">{sceneError}</p>}
+      </main>
+      <footer className="workspace-footer">
+        <span>Click empty space to open a window</span>
+        <span className="desktop-hints">Drag title bars or edges · Alt + scroll for depth</span>
+        {state.storageError && <span role="alert">Autosave unavailable</span>}
+      </footer>
       {error && <div className="app-notice" role="alert"><CircleAlert size={18} />{error}
         <button type="button" className="icon-button" aria-label="Dismiss notification" onClick={() => setError('')}><X size={15} /></button>
       </div>}

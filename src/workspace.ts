@@ -78,7 +78,6 @@ const oldSampleFolder = String.fromCodePoint(0x30d5, 0x30a3, 0x30fc, 0x30eb, 0x3
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 export const viewHeight = (view: View) => view.height ?? view.width / clamp(view.aspect, minAutoAspect, maxAutoAspect)
-export const desktopDepth = (view: View) => Math.max(limits.near, Math.abs(view.z))
 export const filterMedia = (listing: DirectoryListing) => listing.entries.filter(entry => entry.kind !== 'folder')
 
 function finite(value: unknown, fallback: number, min: number, max: number) {
@@ -160,16 +159,6 @@ export function resizedDimensions(
   }
 }
 
-export function resized(view: View, dx: number, dy: number, xSide: number, ySide: number): Partial<View> {
-  const size = resizedDimensions(view, dx, dy, xSide, ySide)
-  const originalHeight = viewHeight(view)
-  return {
-    ...size,
-    x: clamp(view.x + xSide * (size.width - view.width) / 2, -100, 100),
-    y: clamp(view.y + ySide * ((size.height ?? originalHeight) - originalHeight) / 2, -100, 100),
-  }
-}
-
 export function mediaOverflow(view: View) {
   const height = viewHeight(view)
   const ratio = view.aspect / (view.width / height)
@@ -200,7 +189,6 @@ export class MediaRuntime {
   readonly video?: HTMLVideoElement
   #state = blankMedia
   #view: View
-  #listeners = new Set<() => void>()
   #abort = new AbortController()
   #frame?: number
   #previousTime = 0
@@ -264,11 +252,6 @@ export class MediaRuntime {
     }, options)
     video.addEventListener('error', this.#fail, options)
     video.src = mediaUrl(media)
-  }
-
-  subscribe = (listener: () => void) => {
-    this.#listeners.add(listener)
-    return () => this.#listeners.delete(listener)
   }
 
   snapshot = () => this.#state
@@ -335,8 +318,6 @@ export class MediaRuntime {
       this.video.removeAttribute('src')
       this.video.load()
     }
-    this.element.remove()
-    this.#listeners.clear()
   }
 
   #requestFrame() {
@@ -365,7 +346,6 @@ export class MediaRuntime {
 
   #publish(patch: Partial<MediaState>) {
     this.#state = { ...this.#state, ...patch }
-    for (const listener of this.#listeners) listener()
   }
 }
 
@@ -501,19 +481,8 @@ export class Workspace {
     if (view) this.patch(id, { z: (view.z > 0 ? 1 : -1) * clamp(Math.abs(view.z) + distance, limits.near, limits.far) })
   }
 
-  fit(width: number, height: number, base: number) {
-    const views = this.#state.views
-    if (!views.length || base <= 0) return
-    const left = Math.min(...views.map(view => (view.x - view.width / 2) / desktopDepth(view)))
-    const right = Math.max(...views.map(view => (view.x + view.width / 2) / desktopDepth(view)))
-    const top = Math.max(...views.map(view => (view.y + viewHeight(view) / 2) / desktopDepth(view)))
-    const bottom = Math.min(...views.map(view => (view.y - viewHeight(view) / 2) / desktopDepth(view)))
-    const topInset = Math.min(42, height * 0.15)
-    const controlsInset = views.some(view => view.controls && view.media?.kind === 'video') ? 90 : 44
-    const bottomInset = Math.min(controlsInset, height * 0.35)
-    const zoom = clamp(Math.min(width * 0.84 / (right - left), (height - topInset - bottomInset) / (top - bottom)) / base, 0.002, 1.5)
-    const y = (top + bottom) / 2 + (topInset - bottomInset) / (2 * base * zoom)
-    this.#publish({ camera: { x: (left + right) / 2, y, zoom } }, true)
+  setCamera(camera: Camera) {
+    this.#publish({ camera }, true)
   }
 
   save = () => {

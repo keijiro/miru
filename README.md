@@ -1,6 +1,6 @@
 # miru
 
-miru is a local media viewer for arranging and viewing multiple images and videos in one space. The desktop and WebXR modes share the same workspace.
+miru is a local media viewer for arranging and viewing multiple images and videos in one space. It is designed for WebXR and has a desktop fallback that uses the same WebGL 2 workspace. On desktop, windows face the camera even when they have a different saved VR orientation.
 
 ## Getting started
 
@@ -40,6 +40,7 @@ The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP
 | --- | --- |
 | Open a window | Click empty space in the workspace. |
 | View a file | Select an image or video in the window's file browser. |
+| Browse a folder | Select a folder tile. Use **Previous** and **Next** to change pages, and **Root** or **Up** to go back. |
 | Return to the file browser | Click the back arrow in the window's title bar. |
 | Move a view | Drag its title bar. |
 | Adjust depth | Hold `Alt` and scroll over the view. |

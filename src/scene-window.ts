@@ -1,8 +1,6 @@
 import {
-  BackSide, BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Fog, GridHelper, Group, Line, LineBasicMaterial,
-  Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Plane, PlaneGeometry, Quaternion, Ray, Raycaster, Scene,
-  SphereGeometry, SRGBColorSpace, Texture, Vector3, VideoTexture, WebGLRenderer,
-  type Intersection, type XRTargetRaySpace,
+  BackSide, CanvasTexture, DoubleSide, Group, Mesh, MeshBasicMaterial, Plane, PlaneGeometry,
+  Quaternion, Ray, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import {
@@ -12,14 +10,14 @@ import {
 
 const ink = '#e4ebf4'
 const muted = '#a1b1c4'
-const mint = '#6ae9ce'
+export const mint = '#6ae9ce'
 const surface = '#141d2a'
 const line = '#354659'
-const controllerSmoothingTime = 0.035 // Seconds
 const uiPixelsPerMetre = 720 / windowDefaults.width
 const metres = (pixels: number) => pixels / uiPixelsPerMetre
 const frameBorder = 0.004
 const titleHeight = 48
+export const windowTitleHeight = metres(titleHeight)
 const resizeInset = metres(18)
 const resizeOutset = 0.01
 
@@ -39,15 +37,15 @@ const seekX = 25
 const seekY = 22
 const compactControlsWidth = 570
 
-type Face = Mesh<PlaneGeometry, MeshBasicMaterial>
-type Hit = Intersection<Face>
-interface Grab {
+export type Face = Mesh<PlaneGeometry, MeshBasicMaterial>
+export type Hit = Intersection<Face>
+export interface Grab {
   update(ray: Ray, depth: number, orientation: Quaternion): void
   finish?(commit: boolean): void
 }
-interface Target {
+export interface Target {
   mesh: Face
-  panel: XRWindow
+  panel: SceneWindow
   press(hit: Hit, ray: Ray): Grab | void
 }
 type Action = () => void
@@ -237,7 +235,7 @@ function xyDrag(
   }
 }
 
-class XRWindow {
+export class SceneWindow {
   readonly group = new Group()
   readonly targets: Target[]
   #view: View
@@ -249,10 +247,11 @@ class XRWindow {
   #title = new Panel(this.group)
   #controls = new Panel(this.group)
   #message = new Panel(this.group)
-  #browser?: XRBrowser
+  #browser?: FileBrowser
   #runtime?: MediaRuntime
   #texture?: Texture
   #selected = false
+  #immersive = true
   #lastControls = ''
   #lastMessage = ''
 
@@ -272,7 +271,24 @@ class XRWindow {
     this.#paintFrame()
   }
 
+  get id() { return this.#view.id }
   get runtime() { return this.#runtime }
+
+  get desktopBounds() {
+    const { x, y, z } = this.group.position
+    const halfWidth = this.#frame.scale.x / 2
+    const halfHeight = this.#frame.scale.y / 2
+    const centerY = this.#frame.position.y
+    const bottom = this.#controls.mesh.visible
+      ? this.#controls.mesh.position.y - this.#controls.mesh.scale.y / 2
+      : centerY - halfHeight
+    return {
+      left: (x - halfWidth) / -z,
+      right: (x + halfWidth) / -z,
+      bottom: (y + bottom) / -z,
+      top: (y + centerY + halfHeight) / -z,
+    }
+  }
 
   get #size() {
     const { width, media } = this.#view
@@ -283,11 +299,11 @@ class XRWindow {
     }
   }
 
-  sync(view: View, selected: boolean, runtime: MediaRuntime | undefined) {
+  sync(view: View, selected: boolean, runtime: MediaRuntime | undefined, immersive: boolean) {
     const runtimeChanged = runtime !== this.#runtime
     const repaint = selected !== this.#selected || runtimeChanged || view.media?.name !== this.#view.media?.name
     const createBrowser = !runtime && !this.#browser
-    if (createBrowser) this.#browser = new XRBrowser(this.group, this.workspace, view.id, this.end)
+    if (createBrowser) this.#browser = new FileBrowser(this.group, this.workspace, view.id, this.end)
     if (runtimeChanged) {
       this.#runtime = runtime
       this.#texture?.dispose()
@@ -296,9 +312,10 @@ class XRWindow {
       this.#lastControls = ''
     }
     const previousTitleWidth = this.#title.width
-    const relayout = view !== this.#view || runtimeChanged || createBrowser
+    const relayout = view !== this.#view || runtimeChanged || createBrowser || immersive !== this.#immersive
     if (relayout) {
       this.#view = view
+      this.#immersive = immersive
       this.#layout()
     }
     this.#selected = selected
@@ -309,7 +326,7 @@ class XRWindow {
       this.#screen.visible = false
       this.#media.visible = false
       this.#message.mesh.visible = false
-      this.#browser?.sync(view.browser)
+      this.#browser?.sync(view.browser, immersive)
       return
     }
     const media = runtime.snapshot()
@@ -382,14 +399,16 @@ class XRWindow {
   #layout() {
     const view = this.#view
     const { width, height } = this.#size
-    const title = metres(titleHeight)
+    const title = windowTitleHeight
     const compactControls = Math.round(width * uiPixelsPerMetre) < compactControlsWidth
     const controls = metres(compactControls ? 146 : 96)
     const controlsVisible = Boolean(this.#runtime?.video) && view.controls
     // The resize hitbox stops at the controls when they share its plane.
     const bottomOutset = controlsVisible ? frameBorder : resizeOutset
-    this.group.position.set(view.x, view.y, view.z)
-    this.group.quaternion.fromArray(view.orientation)
+    // Present saved windows head-on when no headset is in use, including views behind the XR origin.
+    this.group.position.set(view.x, view.y, this.#immersive ? view.z : -Math.max(limits.near, Math.abs(view.z)))
+    if (this.#immersive) this.group.quaternion.fromArray(view.orientation)
+    else this.group.quaternion.identity()
     const frameWidth = width + frameBorder * 2
     const frameHeight = height + title + frameBorder * 2
     place(this.#back, frameWidth, frameHeight, title / 2)
@@ -499,11 +518,13 @@ class XRWindow {
     if (local.y >= height / 2) {
       const normal = new Vector3(0, 0, 1).applyQuaternion(this.group.quaternion)
       const panel = this.#title
-      if (ray.direction.dot(normal) < 0) {
-        panel.press((local.x / panel.mesh.scale.x + 0.5) * panel.width,
-          (height / 2 + panel.mesh.scale.y - local.y) / panel.mesh.scale.y * panel.height)
-      }
-      return
+      if (ray.direction.dot(normal) >= 0) return
+      const pressed = panel.press((local.x / panel.mesh.scale.x + 0.5) * panel.width,
+        (height / 2 + panel.mesh.scale.y - local.y) / panel.mesh.scale.y * panel.height)
+      if (pressed || this.#immersive) return
+      return xyDrag(view, hit.point, this.group.quaternion, (dx, dy) => {
+        this.workspace.patch(view.id, { x: clamp(view.x + dx, -100, 100), y: clamp(view.y + dy, -100, 100) })
+      })
     }
     if (!view.media) {
       this.#browser?.press(local.x / width + 0.5, 0.5 - local.y / height)
@@ -547,7 +568,7 @@ class XRWindow {
   }
 }
 
-class XRBrowser {
+class FileBrowser {
   #panel: Panel
   #pageAnchor = 0
   #pageSize = 1
@@ -572,7 +593,7 @@ class XRBrowser {
     this.#panel.press(u * this.#panel.width, v * this.#panel.height)
   }
 
-  sync({ listing, busy, error }: View['browser']) {
+  sync({ listing, busy, error }: View['browser'], immersive: boolean) {
     if (this.#listing !== listing) {
       if (this.#listing?.path !== listing.path) this.#pageAnchor = 0
       this.#listing = listing
@@ -592,7 +613,7 @@ class XRBrowser {
     this.#pageAnchor = Math.min(this.#pageAnchor, Math.max(0, listing.entries.length - 1))
     const page = Math.floor(this.#pageAnchor / pageSize)
     const pageCount = Math.max(1, Math.ceil(listing.entries.length / pageSize))
-    const signature = JSON.stringify([width, height, busy, error, page])
+    const signature = JSON.stringify([width, height, busy, error, page, immersive])
     if (!this.#dirty && signature === this.#signature) return
     this.#signature = signature
     this.#dirty = false
@@ -605,11 +626,11 @@ class XRBrowser {
       const path = listing.path ? `${listing.rootName} / ${listing.path}` : listing.rootName
       const pathX = listing.path ? 176 : browserMargin
       const right = width - browserMargin
-      const refreshX = right - 197
+      const refreshX = right - (immersive ? 197 : 98)
       const pathRight = compact ? right : refreshX - 10
       text(ctx, path, pathX, 33, 22, muted, 560, pathRight - pathX)
       panel.button('Refresh', refreshX, 14 + headerExtra, 98, 38, () => void this.workspace.navigate(this.id, listing.path))
-      panel.button('Exit VR', right - 90, 14 + headerExtra, 90, 38, this.end)
+      if (immersive) panel.button('Exit VR', right - 90, 14 + headerExtra, 90, 38, this.end)
       rect(ctx, browserMargin, 63 + headerExtra, innerWidth, 2, line)
       if (error || busy) {
         text(ctx, error || 'Loading…', browserMargin, 86 + headerExtra, 20, error ? '#f3c387' : muted, 520, innerWidth)
@@ -668,210 +689,5 @@ class XRBrowser {
     }
     if (item.kind === 'video') chip(ctx, '▶', x + cardSize - 52, y + destH - 30, 36, 30)
     this.#panel.action(x, y, cardSize, cardSize, () => this.workspace.open(this.id, item))
-  }
-}
-
-interface Pointer {
-  controller: XRTargetRaySpace
-  beam: Line<BufferGeometry, LineBasicMaterial>
-  cursor: Mesh<SphereGeometry, MeshBasicMaterial>
-  source?: XRInputSource
-  grab?: { panel: XRWindow, action: Grab, button: 'select' | 'squeeze' }
-}
-
-export class XRWorkspace {
-  #renderer: WebGLRenderer
-  #scene = new Scene()
-  #camera = new PerspectiveCamera(55, 1, 0.04, 80)
-  #floor = new GridHelper(70, 70, '#396068', '#263746')
-  #windows = new Map<string, XRWindow>()
-  #pointers: Pointer[]
-  #raycaster = new Raycaster()
-  #targets = new Map<Face, Target>()
-  #session?: XRSession
-  #previousFrame = 0
-  #destroyed = false
-
-  constructor(private readonly workspace: Workspace, container: HTMLElement) {
-    const canvas = document.createElement('canvas')
-    // Request XR compatibility up front to avoid context loss when entering PC VR.
-    const context = canvas.getContext('webgl2', { xrCompatible: true, antialias: true, alpha: false })
-    if (!context) throw new Error('Could not create a WebGL 2 context for VR mode.')
-    this.#renderer = new WebGLRenderer({ canvas, context })
-    this.#renderer.xr.enabled = true
-    this.#renderer.xr.setReferenceSpaceType('local')
-    this.#renderer.setSize(Math.max(window.innerWidth, 1), Math.max(window.innerHeight, 1), false)
-    container.append(this.#renderer.domElement)
-
-    this.#scene.background = new Color('#0c1420')
-    this.#scene.fog = new Fog('#0c1420', 7, 25)
-    this.#floor.position.y = -1.58
-    this.#scene.add(this.#floor)
-    this.#pointers = [0, 1].map(index => this.#createPointer(index))
-  }
-
-  async start(session: XRSession) {
-    this.#session = session
-    await this.#renderer.xr.setSession(session)
-    if (!this.#destroyed) this.#renderer.xr.setAnimationLoop(this.#frame)
-  }
-
-  dispose() {
-    this.#destroyed = true
-    this.#renderer.setAnimationLoop(null)
-    for (const panel of this.#windows.values()) panel.dispose()
-    for (const pointer of this.#pointers) {
-      this.#resetPointer(pointer)
-      pointer.beam.geometry.dispose()
-      pointer.beam.material.dispose()
-      pointer.cursor.geometry.dispose()
-      pointer.cursor.material.dispose()
-    }
-    this.#floor.dispose()
-    this.#renderer.dispose()
-    this.#renderer.domElement.remove()
-  }
-
-  #createPointer(index: number): Pointer {
-    const controller = this.#renderer.xr.getController(index)
-    const geometry = new BufferGeometry()
-    geometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 0, 0, -1]), 3))
-    const beam = new Line(geometry, new LineBasicMaterial({ color: mint, transparent: true, opacity: 0.8 }))
-    beam.frustumCulled = false
-    beam.visible = false
-    const cursor = new Mesh(new SphereGeometry(0.005, 12, 8), new MeshBasicMaterial({ color: mint, toneMapped: false }))
-    cursor.visible = false
-    this.#scene.add(beam, cursor)
-    const pointer: Pointer = { controller, beam, cursor }
-    controller.addEventListener('connected', event => {
-      pointer.source = event.data
-    })
-    controller.addEventListener('disconnected', () => {
-      pointer.source = undefined
-      this.#resetPointer(pointer)
-    })
-    controller.addEventListener('selectstart', () => this.#press(pointer, 'select'))
-    controller.addEventListener('selectend', () => {
-      if (pointer.grab?.button === 'select') this.#finishGrab(pointer, controller.visible)
-    })
-    controller.addEventListener('squeezestart', () => this.#press(pointer, 'squeeze'))
-    controller.addEventListener('squeezeend', () => {
-      if (pointer.grab?.button === 'squeeze') this.#finishGrab(pointer, controller.visible)
-    })
-    return pointer
-  }
-
-  #press(pointer: Pointer, button: 'select' | 'squeeze') {
-    if (!pointer.source || !pointer.controller.visible || pointer.grab) return
-    // Use the same filtered pose as the displayed ray.
-    if (!pointer.beam.visible) this.#filterPose(pointer, 1)
-    this.#sync()
-    const hit = this.#hit(pointer)
-    const target = hit && this.#targets.get(hit.object)
-    if (!hit || !target) {
-      if (button === 'select') this.#createWindow(this.#raycaster.ray)
-      return
-    }
-    const { panel } = target
-    if (this.#pointers.some(other => other.grab?.panel === panel)) return
-    const action = button === 'squeeze' ? panel.grab(hit, pointer.beam.quaternion) : target.press(hit, this.#raycaster.ray)
-    if (action) pointer.grab = { panel, action, button }
-  }
-
-  #createWindow(ray: Ray) {
-    const position = ray.at(windowDefaults.depth, new Vector3())
-    const viewer = this.#renderer.xr.getCamera().getWorldPosition(new Vector3())
-    const rotation = new Matrix4().lookAt(viewer, position, new Vector3(0, 1, 0))
-    this.workspace.create({
-      x: position.x, y: position.y, z: position.z,
-      orientation: new Quaternion().setFromRotationMatrix(rotation).toArray(),
-    })
-  }
-
-  #end = () => { if (this.#session) void this.#session.end().catch(() => {}) }
-
-  #finishGrab(pointer: Pointer, commit: boolean) {
-    const grab = pointer.grab
-    if (!grab) return
-    pointer.grab = undefined
-    grab.action.finish?.(commit)
-    if (commit) this.workspace.save()
-  }
-
-  #sync() {
-    const { views, selected } = this.workspace.snapshot()
-    const wanted = new Set(views.map(view => view.id))
-    for (const [id, panel] of this.#windows) {
-      if (wanted.has(id)) continue
-      for (const pointer of this.#pointers) if (pointer.grab?.panel === panel) this.#finishGrab(pointer, false)
-      panel.dispose()
-      this.#windows.delete(id)
-    }
-    this.#targets.clear()
-    for (const view of views) {
-      const runtime = this.workspace.runtime(view.id)
-      let panel = this.#windows.get(view.id)
-      if (!panel) {
-        panel = new XRWindow(this.workspace, view, this.#end)
-        this.#windows.set(view.id, panel)
-        this.#scene.add(panel.group)
-      }
-      if (panel.runtime !== runtime) {
-        for (const pointer of this.#pointers) if (pointer.grab?.panel === panel) this.#finishGrab(pointer, false)
-      }
-      panel.sync(view, selected === view.id, runtime)
-      for (const target of panel.targets) if (target.mesh.visible) this.#targets.set(target.mesh, target)
-    }
-    this.#scene.updateMatrixWorld()
-  }
-
-  #frame = (time: number) => {
-    const dt = this.#previousFrame ? clamp((time - this.#previousFrame) / 1000, 0, 0.05) : 0
-    const alpha = 1 - Math.exp(-dt / controllerSmoothingTime)
-    this.#previousFrame = time
-    this.#sync()
-    for (const pointer of this.#pointers) {
-      if (!pointer.source || !pointer.controller.visible) {
-        this.#resetPointer(pointer)
-        continue
-      }
-      this.#filterPose(pointer, alpha)
-      const hit = this.#hit(pointer)
-      const axes = pointer.source.gamepad?.axes
-      const y = axes?.[3] ?? axes?.[1] ?? 0
-      const depth = Math.abs(y) > 0.2 ? y * dt * 2.2 : 0
-      pointer.grab?.action.update(this.#raycaster.ray, depth, pointer.beam.quaternion)
-      const positions = pointer.beam.geometry.getAttribute('position')
-      positions.setZ(1, -(hit?.distance ?? windowDefaults.depth))
-      positions.needsUpdate = true
-      pointer.beam.material.opacity = hit ? 0.82 : 0.27
-      pointer.cursor.visible = !hit && !pointer.grab
-      if (pointer.cursor.visible) this.#raycaster.ray.at(windowDefaults.depth, pointer.cursor.position)
-    }
-    this.#renderer.render(this.#scene, this.#camera)
-  }
-
-  #resetPointer(pointer: Pointer) {
-    this.#finishGrab(pointer, false)
-    pointer.beam.visible = false
-    pointer.cursor.visible = false
-  }
-
-  #filterPose({ controller, beam }: Pointer, alpha: number) {
-    if (beam.visible) {
-      beam.position.lerp(controller.position, alpha)
-      beam.quaternion.slerp(controller.quaternion, alpha)
-    } else {
-      beam.position.copy(controller.position)
-      beam.quaternion.copy(controller.quaternion)
-      beam.visible = true
-    }
-  }
-
-  #hit(pointer: Pointer): Hit | undefined {
-    const { ray } = this.#raycaster
-    ray.origin.copy(pointer.beam.position)
-    ray.direction.set(0, 0, -1).applyQuaternion(pointer.beam.quaternion)
-    return this.#raycaster.intersectObjects([...this.#targets.keys()], false)[0] as Hit | undefined
   }
 }
