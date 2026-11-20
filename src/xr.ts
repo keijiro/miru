@@ -1,12 +1,12 @@
 import {
-  BufferAttribute, BufferGeometry, CanvasTexture, Color, Fog, GridHelper, Group, Line, LineBasicMaterial,
+  BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Fog, GridHelper, Group, Line, LineBasicMaterial,
   Mesh, MeshBasicMaterial, PerspectiveCamera, Plane, PlaneGeometry, Quaternion, Ray, Raycaster, Scene,
   SRGBColorSpace, Texture, Vector3, VideoTexture, WebGLRenderer,
   type Intersection, type XRTargetRaySpace,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import {
-  clamp, formatTime, limits, panned, resized, viewHeight,
+  clamp, formatTime, limits, panned, resizedDimensions, viewHeight,
   type MediaRuntime, type View, type Workspace,
 } from './workspace'
 
@@ -15,15 +15,17 @@ const muted = '#a1b1c4'
 const mint = '#6ae9ce'
 const surface = '#141d2a'
 const line = '#354659'
+const controllerSmoothingTime = 0.035 // Seconds
 
 type Face = Mesh<PlaneGeometry, MeshBasicMaterial>
 type Hit = Intersection<Face>
 interface Grab {
-  update(ray: Ray, depth: number): void
+  update(ray: Ray, depth: number, orientation: Quaternion): void
   finish?(commit: boolean): void
 }
 interface Target {
   mesh: Face
+  panel?: XRWindow
   press(hit: Hit, ray: Ray): Grab | void
 }
 type Action = () => void
@@ -133,15 +135,23 @@ function visibleMedia(mesh: Face, view: View) {
   uv.needsUpdate = true
 }
 
-function xyDrag(view: View, point: Vector3, apply: (dx: number, dy: number) => void, finish?: (moved: boolean) => void): Grab {
-  const plane = new Plane(new Vector3(0, 0, 1), -point.z)
+function panelPlane(point: Vector3, orientation: Quaternion) {
+  const normal = new Vector3(0, 0, 1).applyQuaternion(orientation)
+  return new Plane().setFromNormalAndCoplanarPoint(normal, point)
+}
+
+function xyDrag(
+  view: View, point: Vector3, orientation: Quaternion,
+  apply: (dx: number, dy: number) => void, finish?: (moved: boolean) => void,
+): Grab {
+  const plane = panelPlane(point, orientation)
+  const inverse = orientation.clone().invert()
   const intersect = new Vector3()
   let moved = false
   return {
     update(ray) {
       if (!ray.intersectPlane(plane, intersect)) return
-      const dx = intersect.x - point.x
-      const dy = intersect.y - point.y
+      const { x: dx, y: dy } = intersect.sub(point).applyQuaternion(inverse)
       moved ||= Math.hypot(dx, dy) >= Math.min(0.022, view.width * 0.035)
       if (moved) apply(dx, dy)
     },
@@ -158,7 +168,6 @@ class XRWindow {
   #media = face(this.group, 0xffffff)
   #hitbox = face(this.group, 0xffffff)
   #title = new Panel(this.group, 660, 48)
-  #grip = new Panel(this.group, 200, 30)
   #controls = new Panel(this.group, 660, 140)
   #message = new Panel(this.group, 480, 65)
   #texture?: Texture
@@ -171,21 +180,26 @@ class XRWindow {
     this.#hitbox.material.visible = false
     this.#message.mesh.visible = false
     this.#media.visible = false
+    // Keep the view visible and grabbable from the back after rotation.
+    this.#frame.material.side = DoubleSide
+    this.#hitbox.material.side = DoubleSide
     this.targets = [
-      { mesh: this.#hitbox, press: (hit, ray) => this.#body(hit, ray) },
-      { mesh: this.#grip.mesh, press: hit => this.#move(hit) },
-      { mesh: this.#title.mesh, press: (hit, ray) => this.#header(hit, ray) },
-      { mesh: this.#controls.mesh, press: (hit, ray) => this.#control(hit, ray) },
+      { mesh: this.#hitbox, panel: this, press: hit => this.#body(hit) },
+      { mesh: this.#title.mesh, panel: this, press: hit => this.#header(hit) },
+      { mesh: this.#controls.mesh, panel: this, press: (hit, ray) => this.#control(hit, ray) },
     ]
     this.#layout()
+    this.#paintFrame()
   }
 
   sync(view: View, selected: boolean) {
-    if (view !== this.#view || selected !== this.#selected) {
+    const repaint = selected !== this.#selected || view.media.name !== this.#view.media.name
+    if (view !== this.#view) {
       this.#view = view
-      this.#selected = selected
       this.#layout()
     }
+    this.#selected = selected
+    if (repaint) this.#paintFrame()
 
     const media = this.runtime.snapshot()
     if (media.ready && !this.#texture) {
@@ -211,10 +225,39 @@ class XRWindow {
     if (view.controls) this.#paintControls()
   }
 
+  grab(hit: Hit, orientation: Quaternion): Grab {
+    this.#focus()
+    const view = this.#view
+    const inverse = orientation.clone().invert()
+    const previousPosition = this.group.position.clone()
+    const previousOrientation = this.group.quaternion.clone()
+    const offset = previousPosition.clone().sub(hit.point).applyQuaternion(inverse)
+    const relativeOrientation = inverse.multiply(previousOrientation)
+    const position = new Vector3()
+    const rotatedOffset = new Vector3()
+    const next = new Quaternion()
+    let distance = hit.distance
+    return {
+      update: (ray, depth, current) => {
+        if (depth) distance = clamp(distance + depth, limits.near, limits.far)
+        ray.at(distance, position).add(rotatedOffset.copy(offset).applyQuaternion(current))
+        position.set(clamp(position.x, -100, 100), clamp(position.y, -100, 100), clamp(position.z, -limits.far, -limits.near))
+        next.copy(current).multiply(relativeOrientation).normalize()
+        if (previousPosition.distanceToSquared(position) < 1e-8 && next.angleTo(previousOrientation) < 0.0001) return
+        previousPosition.copy(position)
+        previousOrientation.copy(next)
+        this.workspace.patch(view.id, {
+          x: position.x, y: position.y, z: position.z,
+          orientation: [next.x, next.y, next.z, next.w],
+        })
+      },
+    }
+  }
+
   dispose() {
     this.group.removeFromParent()
     this.#texture?.dispose()
-    for (const panel of [this.#title, this.#grip, this.#controls, this.#message]) panel.dispose()
+    for (const panel of [this.#title, this.#controls, this.#message]) panel.dispose()
     for (const child of this.group.children as Face[]) {
       child.geometry.dispose()
       child.material.dispose()
@@ -226,10 +269,9 @@ class XRWindow {
     const height = viewHeight(view)
     const border = clamp(view.width * 0.005, 0.004, 0.014)
     const title = view.width * 48 / 660
-    const grip = view.width * 0.043
     const controls = view.width * (this.runtime.video ? 140 : 47) / 660
     this.group.position.set(view.x, view.y, view.z)
-    this.#frame.material.color.set(this.#selected ? mint : line)
+    this.group.quaternion.fromArray(view.orientation)
     place(this.#frame, view.width + border * 2, height + title + border * 2, title / 2, -0.01)
     place(this.#screen, view.width, height, 0, 0)
     visibleMedia(this.#media, view)
@@ -238,20 +280,16 @@ class XRWindow {
     place(this.#message.mesh, view.width * 0.63, view.width * 0.086, 0, 0.009)
     place(this.#controls.mesh, view.width, controls, -(height + controls) / 2 - border, 0.017)
     this.#controls.mesh.visible = view.controls
-    const extra = view.controls ? controls + border : 0
-    place(this.#grip.mesh, view.width * 0.285, grip, -(height + grip) / 2 - extra - border * 3, 0.02)
+  }
 
+  #paintFrame() {
+    this.#frame.material.color.set(this.#selected ? mint : line)
     this.#title.paint(ctx => {
       rect(ctx, 0, 0, 660, 2, this.#selected ? mint : line)
       const badge = this.runtime.video ? 'VID' : 'IMG'
       text(ctx, badge, 15, 25, 17, this.#selected ? mint : muted, 700)
-      text(ctx, view.media.name, 68, 25, 23, ink, 625, 529)
+      text(ctx, this.#view.media.name, 68, 25, 23, ink, 625, 529)
       chip(ctx, '×', 613, 7, 40, 35)
-    })
-    this.#grip.paint(ctx => {
-      rect(ctx, 0, 0, 200, 30, this.#selected ? '#42766e' : line, 6)
-      rect(ctx, 2, 2, 196, 26, '#1c2b3b', 5)
-      for (let dot = 0; dot < 5; dot++) rect(ctx, 79 + dot * 9, 13, 4, 4, this.#selected ? mint : muted, 2)
     })
   }
 
@@ -289,28 +327,40 @@ class XRWindow {
 
   #resize(hit: Hit, x: number, y: number) {
     const view = this.#view
-    return xyDrag(view, hit.point, (dx, dy) => this.workspace.patch(view.id, resized(view, dx, dy, x, y)))
+    const orientation = this.group.quaternion.clone()
+    const height = viewHeight(view)
+    const offset = new Vector3()
+    return xyDrag(view, hit.point, orientation, (dx, dy) => {
+      const size = resizedDimensions(view, dx, dy, x, y)
+      offset.set(x * (size.width - view.width) / 2, y * ((size.height ?? height) - height) / 2, 0)
+        .applyQuaternion(orientation)
+      this.workspace.patch(view.id, {
+        ...size,
+        x: clamp(view.x + offset.x, -100, 100),
+        y: clamp(view.y + offset.y, -100, 100),
+        z: clamp(view.z + offset.z, -limits.far, -limits.near),
+      })
+    })
   }
 
-  #body(hit: Hit, ray: Ray) {
+  #body(hit: Hit) {
     const view = this.#view
     this.#focus()
-    const x = (hit.point.x - view.x) / view.width
-    const y = (hit.point.y - view.y) / viewHeight(view)
+    const local = this.group.worldToLocal(hit.point.clone())
+    const x = local.x / view.width
+    const y = local.y / viewHeight(view)
     const edgeX = Math.abs(x) > 0.463 ? Math.sign(x) : 0
     const edgeY = Math.abs(y) > 0.449 ? Math.sign(y) : 0
     if (edgeX || edgeY) return this.#resize(hit, edgeX, edgeY)
 
-    const drag = xyDrag(view, hit.point, (dx, dy) => {
+    return xyDrag(view, hit.point, this.group.quaternion, (dx, dy) => {
       if (view.zoom > 1) this.workspace.patch(view.id, panned(view, dx, dy))
     }, moved => {
       if (!moved) this.workspace.patch(view.id, { controls: !view.controls })
     })
-    drag.update(ray, 0)
-    return drag
   }
 
-  #header(hit: Hit, ray: Ray) {
+  #header(hit: Hit) {
     this.#focus()
     const uv = hit.uv!
     if (uv.x > 0.928 && uv.y > 0.10 && uv.y < 0.87) {
@@ -319,29 +369,7 @@ class XRWindow {
     }
     const x = uv.x < 0.04 ? -1 : uv.x > 0.96 ? 1 : 0
     const y = uv.y > 0.72 ? 1 : 0
-    if (x || y) {
-      const drag = this.#resize(hit, x, y)
-      drag.update(ray, 0)
-      return drag
-    }
-  }
-
-  #move(hit: Hit): Grab {
-    this.#focus()
-    const view = this.#view
-    const delta = new Vector3(view.x, view.y, view.z).sub(hit.point)
-    const position = new Vector3()
-    let distance = hit.distance
-    return {
-      update: (ray, depth) => {
-        distance = clamp(distance + depth, limits.near, limits.far)
-        ray.at(distance, position).add(delta)
-        this.workspace.patch(view.id, {
-          x: clamp(position.x, -100, 100), y: clamp(position.y, -100, 100),
-          z: clamp(position.z, -limits.far, -limits.near),
-        })
-      },
-    }
+    if (x || y) return this.#resize(hit, x, y)
   }
 
   #control(hit: Hit, ray: Ray) {
@@ -360,7 +388,7 @@ class XRWindow {
     const zooming = (!this.runtime.video || y > 93) && x >= 134 && x <= 552
     if (!seeking && !zooming) return
     const panel = this.#controls.mesh
-    const plane = new Plane(new Vector3(0, 0, 1), -hit.point.z)
+    const plane = panelPlane(hit.point, this.group.quaternion)
     const point = new Vector3()
     const update = (current: Ray) => {
       if (!current.intersectPlane(plane, point)) return
@@ -508,7 +536,7 @@ interface Pointer {
   controller: XRTargetRaySpace
   beam: Line<BufferGeometry, LineBasicMaterial>
   source?: XRInputSource
-  grab?: Grab
+  grab?: { panel: XRWindow, action: Grab, button: 'select' | 'squeeze' }
 }
 
 export class XRWorkspace {
@@ -523,8 +551,6 @@ export class XRWorkspace {
   #targets = new Map<Face, Target>()
   #session?: XRSession
   #previousFrame = 0
-  #rotation = new Quaternion()
-  #direction = new Vector3()
   #destroyed = false
 
   constructor(private readonly workspace: Workspace, container: HTMLElement) {
@@ -560,10 +586,10 @@ export class XRWorkspace {
     this.#renderer.setAnimationLoop(null)
     this.#library.dispose()
     for (const panel of this.#windows.values()) panel.dispose()
-    for (const { beam, grab } of this.#pointers) {
-      grab?.finish?.(false)
-      beam.geometry.dispose()
-      beam.material.dispose()
+    for (const pointer of this.#pointers) {
+      this.#resetPointer(pointer)
+      pointer.beam.geometry.dispose()
+      pointer.beam.material.dispose()
     }
     this.#floor.dispose()
     this.#renderer.dispose()
@@ -577,48 +603,63 @@ export class XRWorkspace {
     const beam = new Line(geometry, new LineBasicMaterial({ color: mint, transparent: true, opacity: 0.8 }))
     beam.frustumCulled = false
     beam.visible = false
-    controller.add(beam)
-    this.#scene.add(controller)
+    this.#scene.add(beam)
     const pointer: Pointer = { controller, beam }
     controller.addEventListener('connected', event => {
       pointer.source = event.data
-      beam.visible = true
     })
     controller.addEventListener('disconnected', () => {
-      pointer.grab?.finish?.(false)
-      pointer.grab = undefined
       pointer.source = undefined
-      beam.visible = false
+      this.#resetPointer(pointer)
     })
-    controller.addEventListener('selectstart', () => {
-      if (!pointer.source || pointer.grab) return
-      this.#sync()
-      const hit = this.#hit(pointer)
-      if (!hit) return
-      pointer.grab = this.#targets.get(hit.object)?.press(hit, this.#raycaster.ray) || undefined
-    })
+    controller.addEventListener('selectstart', () => this.#press(pointer, 'select'))
     controller.addEventListener('selectend', () => {
-      if (pointer.grab) {
-        this.#setRay(pointer)
-        pointer.grab.update(this.#raycaster.ray, 0)
-        pointer.grab.finish?.(true)
-        pointer.grab = undefined
-        this.workspace.save()
-      }
+      if (pointer.grab?.button === 'select') this.#finishGrab(pointer, controller.visible)
     })
-    controller.addEventListener('squeezestart', () => {
-      const library = this.#library.group
-      library.visible = !library.visible
-      if (!library.visible) return
-      const pose = this.#renderer.xr.getCamera()
-      const forward = pose.getWorldDirection(new Vector3()).setY(0).normalize()
-      if (!forward.lengthSq()) return
-      const side = new Vector3(-forward.z, 0, forward.x)
-      library.position.copy(pose.getWorldPosition(new Vector3()))
-        .addScaledVector(forward, 2.47).addScaledVector(side, -1.43)
-      library.rotation.y = Math.atan2(-forward.x, -forward.z) + 0.32
+    controller.addEventListener('squeezestart', () => this.#press(pointer, 'squeeze'))
+    controller.addEventListener('squeezeend', () => {
+      if (pointer.grab?.button === 'squeeze') this.#finishGrab(pointer, controller.visible)
     })
     return pointer
+  }
+
+  #press(pointer: Pointer, button: 'select' | 'squeeze') {
+    if (!pointer.source || !pointer.controller.visible || pointer.grab) return
+    // Use the same filtered pose as the displayed ray.
+    if (!pointer.beam.visible) this.#filterPose(pointer, 1)
+    this.#sync()
+    const hit = this.#hit(pointer)
+    const target = hit && this.#targets.get(hit.object)
+    const panel = target?.panel
+    if (button === 'squeeze' && !panel) {
+      this.#toggleLibrary()
+      return
+    }
+    if (!hit || !target) return
+    if (panel && this.#pointers.some(other => other.grab?.panel === panel)) return
+    const action = button === 'squeeze' ? panel?.grab(hit, pointer.beam.quaternion) : target.press(hit, this.#raycaster.ray)
+    if (panel && action) pointer.grab = { panel, action, button }
+  }
+
+  #toggleLibrary() {
+    const library = this.#library.group
+    library.visible = !library.visible
+    if (!library.visible) return
+    const pose = this.#renderer.xr.getCamera()
+    const forward = pose.getWorldDirection(new Vector3()).setY(0).normalize()
+    if (!forward.lengthSq()) return
+    const side = new Vector3(-forward.z, 0, forward.x)
+    library.position.copy(pose.getWorldPosition(new Vector3()))
+      .addScaledVector(forward, 2.47).addScaledVector(side, -1.43)
+    library.rotation.y = Math.atan2(-forward.x, -forward.z) + 0.32
+  }
+
+  #finishGrab(pointer: Pointer, commit: boolean) {
+    const grab = pointer.grab
+    if (!grab) return
+    pointer.grab = undefined
+    grab.action.finish?.(commit)
+    if (commit) this.workspace.save()
   }
 
   #sync() {
@@ -627,6 +668,7 @@ export class XRWorkspace {
     for (const [id, panel] of this.#windows) {
       const exists = wanted.has(id)
       if (exists && panel.runtime === this.workspace.runtime(id)) continue
+      for (const pointer of this.#pointers) if (pointer.grab?.panel === panel) this.#finishGrab(pointer, false)
       panel.dispose()
       this.#windows.delete(id)
     }
@@ -648,14 +690,20 @@ export class XRWorkspace {
 
   #frame = (time: number) => {
     const dt = this.#previousFrame ? clamp((time - this.#previousFrame) / 1000, 0, 0.05) : 0
+    const alpha = 1 - Math.exp(-dt / controllerSmoothingTime)
     this.#previousFrame = time
     this.#sync()
     for (const pointer of this.#pointers) {
-      if (!pointer.source || !pointer.controller.visible) continue
+      if (!pointer.source || !pointer.controller.visible) {
+        this.#resetPointer(pointer)
+        continue
+      }
+      this.#filterPose(pointer, alpha)
       const hit = this.#hit(pointer)
       const axes = pointer.source.gamepad?.axes
       const y = axes?.[3] ?? axes?.[1] ?? 0
-      pointer.grab?.update(this.#raycaster.ray, Math.abs(y) > 0.2 ? y * dt * 2.2 : 0)
+      const depth = Math.abs(y) > 0.2 ? y * dt * 2.2 : 0
+      pointer.grab?.action.update(this.#raycaster.ray, depth, pointer.beam.quaternion)
       const positions = pointer.beam.geometry.getAttribute('position')
       positions.setZ(1, -(hit?.distance ?? 4.0))
       positions.needsUpdate = true
@@ -664,15 +712,26 @@ export class XRWorkspace {
     this.#renderer.render(this.#scene, this.#camera)
   }
 
-  #setRay(pointer: Pointer) {
-    pointer.controller.getWorldPosition(this.#raycaster.ray.origin)
-    pointer.controller.getWorldQuaternion(this.#rotation)
-    this.#direction.set(0, 0, -1).applyQuaternion(this.#rotation)
-    this.#raycaster.ray.direction.copy(this.#direction)
+  #resetPointer(pointer: Pointer) {
+    this.#finishGrab(pointer, false)
+    pointer.beam.visible = false
+  }
+
+  #filterPose({ controller, beam }: Pointer, alpha: number) {
+    if (beam.visible) {
+      beam.position.lerp(controller.position, alpha)
+      beam.quaternion.slerp(controller.quaternion, alpha)
+    } else {
+      beam.position.copy(controller.position)
+      beam.quaternion.copy(controller.quaternion)
+      beam.visible = true
+    }
   }
 
   #hit(pointer: Pointer): Hit | undefined {
-    this.#setRay(pointer)
+    const { ray } = this.#raycaster
+    ray.origin.copy(pointer.beam.position)
+    ray.direction.set(0, 0, -1).applyQuaternion(pointer.beam.quaternion)
     return this.#raycaster.intersectObjects([...this.#targets.keys()], false)[0] as Hit | undefined
   }
 }

@@ -1,5 +1,5 @@
 import {
-  Box, Check, ChevronRight, CircleAlert, Film, Folder, FolderOpen, GripHorizontal, Image as ImageIcon,
+  Box, Check, ChevronRight, CircleAlert, Film, Folder, FolderOpen, Image as ImageIcon,
   Maximize, Minus, Monitor, Mouse, Move, PanelLeft, Pause, Play, Plus, RefreshCw,
   Scan, Volume2, VolumeX, X,
 } from 'lucide-react'
@@ -227,8 +227,11 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
       <div className="view-frame">
         <div className="view-resizable">
           <div className="view-title">
-            <Kind size={15} />
-            <span className="view-name" title={view.media.name}>{view.media.name}</span>
+            <button type="button" className="view-title-drag" aria-label={`Move ${view.media.name}`} title={view.media.name}
+              onPointerDown={event => start(event, { type: 'move' })} {...pointerHandlers} onKeyDown={moveWithKeyboard}>
+              <Kind size={15} aria-hidden="true" />
+              <span className="view-name">{view.media.name}</span>
+            </button>
             <button type="button" className="icon-button close-view" title="Close view" aria-label={`Close ${view.media.name}`}
               onClick={() => workspace.close(view.id)}><X size={17} /></button>
           </div>
@@ -295,10 +298,6 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
           </div>
         )}
       </div>
-      <button type="button" className="view-grip" aria-label="Move view" title="Drag to move · Alt + scroll to adjust depth"
-        onPointerDown={event => start(event, { type: 'move' })} {...pointerHandlers} onKeyDown={moveWithKeyboard}>
-        <GripHorizontal size={22} />
-      </button>
     </section>
   )
 }
@@ -366,7 +365,7 @@ export function Desktop({ workspace, state, showLibrary }: {
       <footer className="workspace-footer">
         <div className="desktop-indicator"><Monitor size={15} /><span>Desktop</span></div>
         <div className="hints">
-          <span><Move size={14} />Drag bar to move</span>
+          <span><Move size={14} />Drag title bar to move</span>
           <span><Maximize size={13} />Drag edges to resize</span>
           <span><Mouse size={14} /><kbd>Alt</kbd> + scroll for depth</span>
         </div>

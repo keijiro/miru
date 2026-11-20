@@ -4,6 +4,7 @@ const minWidth = 0.24
 const maxWidth = 6
 const minAutoAspect = 0.52
 const maxAutoAspect = 2.8
+const defaultDepth = 1
 
 export const limits = {
   minWidth,
@@ -21,6 +22,7 @@ export interface View {
   x: number
   y: number
   z: number
+  orientation: [x: number, y: number, z: number, w: number]
   width: number
   // Derive the height from the media until the view is resized.
   height?: number
@@ -93,6 +95,15 @@ function restoreSamplePath(path: string) {
     : path
 }
 
+function restoreOrientation(value: unknown): View['orientation'] {
+  if (Array.isArray(value) && value.length === 4 && value.every(Number.isFinite)) {
+    const [x, y, z, w] = value
+    const length = Math.hypot(x, y, z, w)
+    if (length > 0 && Number.isFinite(length)) return [x / length, y / length, z / length, w / length]
+  }
+  return [0, 0, 0, 1]
+}
+
 function restoreView(view: View, samples: boolean): View | undefined {
   if (!view || typeof view.id !== 'string' || !view.media || typeof view.media.path !== 'string'
     || typeof view.media.name !== 'string' || typeof view.media.version !== 'string'
@@ -102,8 +113,9 @@ function restoreView(view: View, samples: boolean): View | undefined {
     media: samples ? { ...view.media, path: restoreSamplePath(view.media.path) } : view.media,
     x: finite(view.x, 0, -100, 100),
     y: finite(view.y, 0, -100, 100),
-    z: finite(view.z, -3.15, -limits.far, -limits.near),
-    width: finite(view.width, 1.42, limits.minWidth, limits.maxWidth),
+    z: finite(view.z, -defaultDepth, -limits.far, -limits.near),
+    orientation: restoreOrientation(view.orientation),
+    width: finite(view.width, 0.45, limits.minWidth, limits.maxWidth),
     height: typeof view.height === 'number' && Number.isFinite(view.height)
       ? clamp(view.height, limits.minHeight, limits.maxHeight) : undefined,
     aspect: finite(view.aspect, 16 / 9, 0.01, 100),
@@ -121,29 +133,38 @@ function restoreView(view: View, samples: boolean): View | undefined {
 
 function newView(media: MediaEntry, index: number): View {
   const slots = [
-    { x: -0.43, y: 0.31, z: -3.05, width: 1.57 },
-    { x: 0.90, y: -0.45, z: -3.43, width: 1.17 },
-    { x: 0.85, y: 0.58, z: -3.21, width: 1.10 },
-    { x: -0.80, y: -0.50, z: -3.22, width: 1.12 },
+    { x: -0.14, y: 0.10, width: 0.51 },
+    { x: 0.26, y: -0.13, width: 0.34 },
+    { x: 0.26, y: 0.18, width: 0.34 },
+    { x: -0.25, y: -0.16, width: 0.35 },
   ]
   const slot = slots[index % slots.length]
-  const offset = (Math.floor(index / slots.length) % 5) * 0.11
+  const offset = (Math.floor(index / slots.length) % 5) * 0.035
   return {
-    id: crypto.randomUUID(), media, ...slot, x: slot.x + offset, y: slot.y - offset,
+    id: crypto.randomUUID(), media, ...slot, x: slot.x + offset, y: slot.y - offset, z: -defaultDepth,
+    orientation: [0, 0, 0, 1],
     aspect: 16 / 9, zoom: 1, panX: 0, panY: 0, controls: false,
     paused: false, muted: true, loopStart: 0, loopEnd: null,
   }
 }
 
-export function resized(view: View, dx: number, dy: number, xSide: number, ySide: number): Partial<View> {
+export function resizedDimensions(view: View, dx: number, dy: number, xSide: number, ySide: number) {
   const originalHeight = viewHeight(view)
   const width = clamp(view.width + dx * xSide, limits.minWidth, limits.maxWidth)
   const height = clamp(originalHeight + dy * ySide, limits.minHeight, limits.maxHeight)
   return {
     width,
     height: width === view.width && height === originalHeight ? view.height : height,
-    x: clamp(view.x + xSide * (width - view.width) / 2, -100, 100),
-    y: clamp(view.y + ySide * (height - originalHeight) / 2, -100, 100),
+  }
+}
+
+export function resized(view: View, dx: number, dy: number, xSide: number, ySide: number): Partial<View> {
+  const size = resizedDimensions(view, dx, dy, xSide, ySide)
+  const originalHeight = viewHeight(view)
+  return {
+    ...size,
+    x: clamp(view.x + xSide * (size.width - view.width) / 2, -100, 100),
+    y: clamp(view.y + ySide * ((size.height ?? originalHeight) - originalHeight) / 2, -100, 100),
   }
 }
 
