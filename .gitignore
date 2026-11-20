@@ -1,4 +1,5 @@
 node_modules/
+/.pnpm-store/
 dist/
 .miru-cache/
 .DS_Store
