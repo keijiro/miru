@@ -6,7 +6,7 @@ import {
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import {
-  clamp, formatTime, frameAspect, limits, panned, resized, viewHeight,
+  clamp, formatTime, limits, panned, resized, viewHeight,
   type MediaRuntime, type View, type Workspace,
 } from './workspace'
 
@@ -110,7 +110,8 @@ function slider(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, 
 }
 
 function visibleMedia(mesh: Face, view: View) {
-  const aspect = frameAspect(view)
+  const height = viewHeight(view)
+  const aspect = view.width / height
   const fitWidth = Math.min(1, view.aspect / aspect)
   const fitHeight = Math.min(1, aspect / view.aspect)
   const crop = (fit: number, pan: number) => {
@@ -122,7 +123,6 @@ function visibleMedia(mesh: Face, view: View) {
   }
   const x = crop(fitWidth, view.panX)
   const y = crop(fitHeight, view.panY)
-  const height = viewHeight(view)
   mesh.scale.set((x.upper - x.lower) * view.width, (y.upper - y.lower) * height, 1)
   mesh.position.set((x.lower + x.upper - 1) * view.width / 2, (y.lower + y.upper - 1) * height / 2, 0.003)
   const uv = mesh.geometry.getAttribute('uv')

@@ -1,8 +1,15 @@
 import { fetchDirectory, mediaUrl, type DirectoryListing, type MediaEntry } from './media-api'
 
+const minWidth = 0.24
+const maxWidth = 6
+const minAutoAspect = 0.52
+const maxAutoAspect = 2.8
+
 export const limits = {
-  minWidth: 0.24,
-  maxWidth: 6,
+  minWidth,
+  maxWidth,
+  minHeight: minWidth / maxAutoAspect,
+  maxHeight: maxWidth / minAutoAspect,
   near: 0.55,
   far: 24,
   maxZoom: 4,
@@ -15,6 +22,8 @@ export interface View {
   y: number
   z: number
   width: number
+  // Derive the height from the media until the view is resized.
+  height?: number
   aspect: number
   zoom: number
   panX: number
@@ -59,8 +68,7 @@ const blankMedia: MediaState = { ready: false, duration: 0, time: 0, playing: fa
 const oldSampleFolder = String.fromCodePoint(0x30d5, 0x30a3, 0x30fc, 0x30eb, 0x30c9, 0x30ce, 0x30fc, 0x30c8)
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
-export const frameAspect = (view: View) => clamp(view.aspect, 0.52, 2.8)
-export const viewHeight = (view: View) => view.width / frameAspect(view)
+export const viewHeight = (view: View) => view.height ?? view.width / clamp(view.aspect, minAutoAspect, maxAutoAspect)
 export const filterMedia = (listing: DirectoryListing) => listing.entries.filter(entry => entry.kind !== 'folder')
 export const extension = (name: string) => name.slice(name.lastIndexOf('.') + 1).toUpperCase()
 
@@ -96,6 +104,8 @@ function restoreView(view: View, samples: boolean): View | undefined {
     y: finite(view.y, 0, -100, 100),
     z: finite(view.z, -3.15, -limits.far, -limits.near),
     width: finite(view.width, 1.42, limits.minWidth, limits.maxWidth),
+    height: typeof view.height === 'number' && Number.isFinite(view.height)
+      ? clamp(view.height, limits.minHeight, limits.maxHeight) : undefined,
     aspect: finite(view.aspect, 16 / 9, 0.01, 100),
     zoom: finite(view.zoom, 1, 1, limits.maxZoom),
     panX: finite(view.panX, 0, -1, 1),
@@ -126,15 +136,14 @@ function newView(media: MediaEntry, index: number): View {
 }
 
 export function resized(view: View, dx: number, dy: number, xSide: number, ySide: number): Partial<View> {
-  const aspect = frameAspect(view)
-  const axisY = ySide / aspect
-  const requested = (dx * xSide + dy * axisY) / (xSide * xSide + axisY * axisY)
-  const width = clamp(view.width + requested, limits.minWidth, limits.maxWidth)
-  const difference = width - view.width
+  const originalHeight = viewHeight(view)
+  const width = clamp(view.width + dx * xSide, limits.minWidth, limits.maxWidth)
+  const height = clamp(originalHeight + dy * ySide, limits.minHeight, limits.maxHeight)
   return {
     width,
-    x: clamp(view.x + xSide * difference / 2, -100, 100),
-    y: clamp(view.y + axisY * difference / 2, -100, 100),
+    height: width === view.width && height === originalHeight ? view.height : height,
+    x: clamp(view.x + xSide * (width - view.width) / 2, -100, 100),
+    y: clamp(view.y + ySide * (height - originalHeight) / 2, -100, 100),
   }
 }
 

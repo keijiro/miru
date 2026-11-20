@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { mediaUrl, type MediaEntry } from './media-api'
 import {
-  clamp, extension, filterMedia, formatTime, frameAspect, limits, panned, resized,
+  clamp, extension, filterMedia, formatTime, limits, panned, resized, viewHeight,
   type View, type Workspace,
 } from './workspace'
 
@@ -219,9 +219,10 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
   const loopEnd = media.duration ? 100 * (view.loopEnd ?? media.duration) / media.duration : 100
   const timelineProgress = media.duration ? 100 * media.time / media.duration : 0
   const width = view.width * pixels
+  const height = viewHeight(view) * pixels
   return (
     <section className={`view-window${selected ? ' is-selected' : ''}`} aria-label={view.media.name} data-view-id={view.id}
-      style={{ left, top: top - width / frameAspect(view) / 2 - 17, width, zIndex: order }}
+      style={{ left, top: top - height / 2 - 17, width, zIndex: order }}
       onFocus={() => workspace.select(view.id)}>
       <div className="view-frame">
         <div className="view-resizable">
@@ -231,7 +232,7 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
             <button type="button" className="icon-button close-view" title="Close view" aria-label={`Close ${view.media.name}`}
               onClick={() => workspace.close(view.id)}><X size={17} /></button>
           </div>
-          <div className="view-screen" style={{ aspectRatio: frameAspect(view) }}>
+          <div className="view-screen" style={{ height }}>
             <div className="view-visual" ref={target} style={{
               transform: `translate(${view.panX * (view.zoom - 1) * 50}%, ${-view.panY * (view.zoom - 1) * 50}%) scale(${view.zoom})`,
             }} />

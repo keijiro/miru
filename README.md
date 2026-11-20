@@ -41,7 +41,7 @@ The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP
 | Open a view | Click an image or video in the file browser. |
 | Move a view | Drag the bar at the bottom of the view. |
 | Adjust depth | Hold `Alt` and scroll over the view. |
-| Resize a view | Drag an edge or corner of the frame. |
+| Resize a view | Drag an edge to change one dimension or a corner to change both. |
 | Show view controls | Click the image or video in the view. |
 | Pan zoomed media | Zoom in, then drag the image or video. |
 | Loop a section of a video | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
@@ -53,7 +53,7 @@ miru automatically saves open views, their position, size, depth, zoom and pan, 
 
 Start the server in WSL2 and open `http://localhost:5173` in Chrome on the same Windows host. Connect your Quest Pro to Virtual Desktop Streamer on Windows and make sure Chrome can access an OpenXR runtime. Turn on **VR mode** at the top of the app. The switch becomes available when Chrome detects a supported session. [WSL localhost access](https://learn.microsoft.com/en-us/windows/wsl/networking) · [WebXR session requirements](https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API/Startup_and_shutdown)
 
-In VR, aim with the controller ray and use the trigger to click or drag. While holding a view by its bar, tilt the thumbstick up or down to move the view closer or farther away. Press the grip button to toggle the file browser. Select **Exit VR** in the file browser or use the desktop switch to end the session.
+In VR, aim with the controller ray and use the trigger to click or drag. Drag a side or corner to resize the view. While holding a view by its bar, tilt the thumbstick up or down to move the view closer or farther away. Press the grip button to toggle the file browser. Select **Exit VR** in the file browser or use the desktop switch to end the session.
 
 WebXR support is implemented. The Quest Pro, Virtual Desktop, and Windows Chrome setup still needs hardware testing.
 
