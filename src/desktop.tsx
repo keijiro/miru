@@ -28,9 +28,12 @@ function Thumbnail({ media }: { media: MediaEntry }) {
   )
 }
 
-function Library({ workspace, view }: {
+type LibraryScroll = { path: string, top: number }
+
+function Library({ workspace, view, scroll }: {
   workspace: Workspace
   view: View
+  scroll: RefObject<LibraryScroll | null>
 }) {
   const { listing, busy, error } = view.browser
   const content = useRef<HTMLDivElement>(null)
@@ -38,7 +41,12 @@ function Library({ workspace, view }: {
   const folders = listing.entries.filter(entry => entry.kind === 'folder')
   const media = filterMedia(listing)
 
-  useLayoutEffect(() => { if (content.current) content.current.scrollTop = 0 }, [listing.path])
+  useLayoutEffect(() => {
+    const element = content.current
+    if (!element) return
+    element.scrollTop = scroll.current?.path === listing.path ? scroll.current.top : 0
+    return () => { scroll.current = { path: listing.path, top: element.scrollTop } }
+  }, [listing.path, scroll])
 
   return (
     <div className="library">
@@ -145,6 +153,7 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
   const runtime = workspace.runtime(view.id)
   const media = useSyncExternalStore(runtime?.subscribe ?? noMediaSubscription, runtime?.snapshot ?? emptyMediaSnapshot)
   const target = useRef<HTMLDivElement>(null)
+  const libraryScroll = useRef<LibraryScroll | null>(null)
   const pointer = useRef<{ action: Drag, view: View, originX: number, originY: number, pixels: number, moved: boolean, id: number } | null>(null)
   const title = view.media?.name ?? 'File browser'
   const Kind = view.media?.kind === 'video' ? Film : view.media ? ImageIcon : FolderOpen
@@ -243,7 +252,7 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
                   onClick={event => { if (event.detail === 0) workspace.patch(view.id, { controls: !view.controls }) }}
                   onPointerDown={event => start(event, { type: 'content' })} {...pointerHandlers} />
               </>
-            ) : <Library workspace={workspace} view={view} />}
+            ) : <Library workspace={workspace} view={view} scroll={libraryScroll} />}
           </div>
           {edges.map(edge => (
             <div key={edge.name} data-edge={edge.name} className={`resize-edge edge-${edge.name}`}
