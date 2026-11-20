@@ -119,7 +119,7 @@ function App({ workspace }: { workspace: Workspace }) {
       </main>
       <footer className="workspace-footer">
         <span>Click empty space to open a window</span>
-        <span className="desktop-hints">Drag title bars or edges · Alt + scroll for depth</span>
+        <span className="desktop-hints">Hover edges to move or corners to resize · Alt + scroll for depth</span>
         {state.storageError && <span role="alert">Autosave unavailable</span>}
       </footer>
       {error && <div className="app-notice" role="alert"><CircleAlert size={18} />{error}

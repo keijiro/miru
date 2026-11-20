@@ -43,14 +43,17 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 | Open a window | Click empty space in the workspace. |
 | View a file | Select an image or video in the window's file browser. |
 | Browse a folder | Select a folder tile. Use **Previous** and **Next** to change pages, and **Root** or **Up** to go back. |
-| Return to the file browser | Click the back arrow in the window's title bar. |
-| Move a view | Drag its title bar. |
+| Return to the file browser | Hover near the upper-left corner inside the media window to reveal **Back**, then click it. |
+| Close a window | Click **Close** in the file browser. |
+| Move a view | Hover near any edge and drag the bar that appears. |
 | Adjust depth | Hold `Alt` and scroll over the view. |
-| Resize a view | Drag an edge to change one dimension or a corner to change both. |
+| Resize a view | Hover near any corner and drag the handle that appears. |
 | Show video controls | Click the video in the view. |
 | Pan cropped media | Drag the image or video along the cropped axis. |
 | Loop a section of a video | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
 | Fit all views on screen | Click **Fit all** at the top of the workspace. |
+
+Hover near a move bar, resize handle, or **Back** to reveal all available controls of this kind on that window. The control under the pointer is highlighted.
 
 Images and videos fill their views while keeping their aspect ratio. miru automatically saves open windows, their position, size, depth, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, videos seek to their loop start. When you first open a video, it starts muted so the browser can autoplay it.
 
@@ -58,9 +61,9 @@ Images and videos fill their views while keeping their aspect ratio. miru automa
 
 Start the server in WSL2 and open `http://localhost:5173` in Chrome on the same Windows host. Connect your Quest Pro to Virtual Desktop Streamer on Windows and make sure Chrome can access an OpenXR runtime. Turn on **VR mode** at the top of the app. The switch becomes available when Chrome detects a supported session. [WSL localhost access](https://learn.microsoft.com/en-us/windows/wsl/networking) · [WebXR session requirements](https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API/Startup_and_shutdown)
 
-In VR, aim at empty space and pull the controller trigger to open a file browser at the cursor, about 1 m from the controller. Windows turn to face the headset as you move. To move a window, grab its title bar with the trigger and drag it. Tilt the thumbstick up or down while holding the trigger to adjust the distance.
+In VR, aim at empty space and pull the controller trigger to open a file browser at the cursor, about 1 m from the controller. Windows turn to face the headset as you move. Aim near any edge and hold the trigger on the bar that appears to move the window. Tilt the thumbstick up or down while holding the trigger to adjust the distance. Aim near a corner and grab its handle to resize.
 
-Use the trigger to select a file, then select **Back** in the title bar to return to its folder. Hold the trigger on an image or video and drag along the cropped axis to pan. Tap the trigger on a video to show its playback controls. Drag a side or corner to resize the window. Text, buttons, and thumbnails keep their size. A wider file browser fits more columns, and a taller one fits more rows. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
+Use the trigger to select a file. Aim inside the upper-left corner of the media window to reveal **Back**, then select it to return to the file's folder. Select **Close** in the file browser to close the window. Hold the trigger on an image or video and drag along the cropped axis to pan. Tap the trigger on a video to show its playback controls. Text, buttons, and thumbnails keep their size as you resize. A wider file browser fits more columns, and a taller one fits more rows. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
 
 WebXR support is implemented. The Quest Pro, Virtual Desktop, and Windows Chrome setup still needs hardware testing.
 

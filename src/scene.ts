@@ -3,16 +3,21 @@ import {
   Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
   SphereGeometry, Vector2, Vector3, WebGLRenderer, type Ray, type XRTargetRaySpace,
 } from 'three'
-import { mint, SceneWindow, windowTitleHeight, type Face, type Grab, type Hit, type Target } from './scene-window'
+import { accent, SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
 
 const controllerSmoothingTime = 0.035 // Seconds
 const cameraFov = 55
 const fogStart = 7
 const fogFalloff = 18
+const background = '#161616'
 
-interface ActiveGrab {
+interface PickedPart {
   panel: SceneWindow
+  part: WindowPart
+}
+
+interface ActiveGrab extends PickedPart {
   action: Grab
 }
 
@@ -27,19 +32,20 @@ interface Pointer {
 export class WorkspaceScene {
   #renderer: WebGLRenderer
   #scene = new Scene()
-  #fog = new Fog('#0c1420', fogStart, fogStart + fogFalloff)
+  #fog = new Fog(background, fogStart, fogStart + fogFalloff)
   #xrCamera = new PerspectiveCamera(cameraFov, 1, 0.04, 80)
   #desktopCamera = this.#xrCamera.clone()
   #headPosition = new Vector3()
   #needsDesktopFit = true
-  #floor = new GridHelper(70, 70, '#396068', '#263746')
+  #floor = new GridHelper(70, 70, '#3b3b3b', '#292929')
   #windows = new Map<string, SceneWindow>()
   #pointers: Pointer[]
   #raycaster = new Raycaster()
-  #targets = new Map<Face, Target>()
+  #targets = new Map<Face, SceneWindow>()
   #size = new Vector2(1, 1)
   #rendererSize = new Vector2()
   #mouse?: ActiveGrab & { id: number }
+  #mousePosition?: Pick<MouseEvent, 'clientX' | 'clientY'>
   #resize: ResizeObserver
   #events = new AbortController()
   #previousFrame = 0
@@ -60,14 +66,16 @@ export class WorkspaceScene {
     })
     this.#resize.observe(container)
 
-    this.#scene.background = new Color('#0c1420')
+    this.#scene.background = new Color(background)
     this.#scene.fog = this.#fog
     this.#floor.position.y = -1.58
     this.#scene.add(this.#floor)
     this.#pointers = [0, 1].map(index => this.#createPointer(index))
     const options = { signal: this.#events.signal }
     canvas.addEventListener('pointerdown', this.#mouseDown, options)
+    canvas.addEventListener('pointerenter', this.#mouseMove, options)
     canvas.addEventListener('pointermove', this.#mouseMove, options)
+    canvas.addEventListener('pointerleave', this.#mouseLeave, options)
     canvas.addEventListener('pointerup', this.#mouseUp, options)
     canvas.addEventListener('pointercancel', this.#mouseCancel, options)
     canvas.addEventListener('lostpointercapture', this.#mouseCancel, options)
@@ -77,6 +85,7 @@ export class WorkspaceScene {
 
   async start(session: XRSession) {
     this.#finishMouse(false)
+    this.#mouseLeave()
     this.#previousFrame = 0
     this.#headPosition.set(0, 0, 0)
     this.#needsDesktopFit = true
@@ -142,7 +151,7 @@ export class WorkspaceScene {
     camera.updateMatrixWorld()
   }
 
-  #mouseRay(event: MouseEvent) {
+  #mouseRay(event: Pick<MouseEvent, 'clientX' | 'clientY'>) {
     const { left, top, width, height } = this.#renderer.domElement.getBoundingClientRect()
     const ndc = new Vector2(2 * (event.clientX - left) / width - 1, 1 - 2 * (event.clientY - top) / height)
     this.#raycaster.setFromCamera(ndc, this.#desktopCamera)
@@ -165,8 +174,8 @@ export class WorkspaceScene {
     const corner = new Vector3()
     const fits = (point: Vector3) => {
       rotation.lookAt(eye, point, camera.up)
-      for (const x of [-width / 2, width / 2]) {
-        for (const y of [-height / 2, height / 2 + windowTitleHeight]) {
+      for (const x of [-width / 2 - windowGripReach, width / 2 + windowGripReach]) {
+        for (const y of [-height / 2 - windowGripReach, height / 2 + windowGripReach]) {
           corner.set(x, y, 0).applyMatrix4(rotation).add(point).project(camera)
           if (Math.abs(corner.x) > 0.98 || Math.abs(corner.y) > 0.98 || corner.z >= 1) return false
         }
@@ -192,24 +201,55 @@ export class WorkspaceScene {
     if (event.button !== 0 || !event.isPrimary || this.#mouse || this.#renderer.xr.getSession()) return
     this.#updateDesktopCamera()
     this.#sync(false)
+    this.#mousePosition = { clientX: event.clientX, clientY: event.clientY }
     const ray = this.#mouseRay(event)
-    const hit = this.#pick()
-    if (!hit) {
+    const picked = this.#pick()
+    if (!picked) {
       this.#createDesktopWindow(ray)
       return
     }
-    const target = this.#targets.get(hit.object)!
-    const action = target.press(hit, ray)
+    const { panel, part, hit } = picked
+    const action = panel.press(part, hit, ray)
     if (action) {
-      this.#mouse = { panel: target.panel, action, id: event.pointerId }
+      this.#mouse = { panel, part, action, id: event.pointerId }
       this.#renderer.domElement.setPointerCapture(event.pointerId)
     }
   }
 
   #mouseMove = (event: PointerEvent) => {
+    if (event.isPrimary) this.#mousePosition = { clientX: event.clientX, clientY: event.clientY }
     if (this.#mouse?.id === event.pointerId) {
       this.#mouse.action.update(this.#mouseRay(event), 0)
     }
+  }
+
+  #mouseLeave = () => {
+    this.#mousePosition = undefined
+    this.#renderer.domElement.style.cursor = ''
+  }
+
+  #updateMouseHover() {
+    let picked: PickedPart | undefined = this.#mouse
+    if (!picked && this.#mousePosition) {
+      const { clientX, clientY } = this.#mousePosition
+      const bounds = this.#renderer.domElement.getBoundingClientRect()
+      if (clientX >= bounds.left && clientX <= bounds.right && clientY >= bounds.top && clientY <= bounds.bottom) {
+        this.#mouseRay(this.#mousePosition)
+        picked = this.#pick()
+      }
+    }
+    let cursor = ''
+    if (picked) {
+      const { panel, part } = picked
+      panel.highlight(part)
+      if (typeof part !== 'string') {
+        cursor = part.x && part.y
+          ? (part.x === part.y ? 'nesw-resize' : 'nwse-resize')
+          : (this.#mouse ? 'grabbing' : 'grab')
+      } else if (part === 'back') cursor = 'pointer'
+    }
+    const style = this.#renderer.domElement.style
+    if (style.cursor !== cursor) style.cursor = cursor
   }
 
   #mouseUp = (event: PointerEvent) => {
@@ -236,8 +276,7 @@ export class WorkspaceScene {
     this.#updateDesktopCamera()
     this.#sync(false)
     this.#mouseRay(event)
-    const hit = this.#pick()
-    const panel = hit && this.#targets.get(hit.object)?.panel
+    const panel = this.#pick()?.panel
     const id = panel?.id ?? this.workspace.snapshot().selected
     if (!id) return
     event.preventDefault()
@@ -249,10 +288,10 @@ export class WorkspaceScene {
     const controller = this.#renderer.xr.getController(index)
     const geometry = new BufferGeometry()
     geometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 0, 0, -1]), 3))
-    const beam = new Line(geometry, new LineBasicMaterial({ color: mint, transparent: true, opacity: 0.8 }))
+    const beam = new Line(geometry, new LineBasicMaterial({ color: accent, transparent: true, opacity: 0.8 }))
     beam.frustumCulled = false
     beam.visible = false
-    const cursor = new Mesh(new SphereGeometry(0.005, 12, 8), new MeshBasicMaterial({ color: mint, toneMapped: false }))
+    const cursor = new Mesh(new SphereGeometry(0.005, 12, 8), new MeshBasicMaterial({ color: accent, toneMapped: false }))
     cursor.visible = false
     this.#scene.add(beam, cursor)
     const pointer: Pointer = { controller, beam, cursor }
@@ -273,17 +312,16 @@ export class WorkspaceScene {
     // Use the same filtered pose as the displayed ray.
     if (!pointer.beam.visible) this.#filterPose(pointer, 1)
     this.#sync(true)
-    const hit = this.#hit(pointer)
-    const target = hit && this.#targets.get(hit.object)
-    if (!hit || !target) {
+    const picked = this.#point(pointer)
+    if (!picked) {
       const { x, y, z } = this.#raycaster.ray.at(windowDefaults.depth, new Vector3())
       this.workspace.create({ x, y, z })
       return
     }
-    const { panel } = target
+    const { panel, part, hit } = picked
     if (this.#pointers.some(other => other.grab?.panel === panel)) return
-    const action = target.press(hit, this.#raycaster.ray)
-    if (action) pointer.grab = { panel, action }
+    const action = panel.press(part, hit, this.#raycaster.ray)
+    if (action) pointer.grab = { panel, part, action }
   }
 
   #end = () => { void this.#renderer.xr.getSession()?.end().catch(() => {}) }
@@ -326,13 +364,12 @@ export class WorkspaceScene {
         this.#scene.add(panel.group)
       }
       if (panel.runtime !== runtime) this.#cancelGrabs(panel)
-      const focused = selected === view.id
       // Desktop windows created at the same depth still need a deterministic stacking order.
-      panel.group.renderOrder = immersive ? 0 : focused ? views.length + 1 : index + 1
-      panel.sync(view, focused, runtime, immersive)
+      panel.group.renderOrder = immersive ? 0 : selected === view.id ? views.length + 1 : index + 1
+      panel.sync(view, runtime, immersive)
       panel.group.lookAt(eye)
       if (!immersive) fogNear = Math.max(fogNear, eye.z - view.z + panel.radius)
-      for (const target of panel.targets) if (target.mesh.visible) this.#targets.set(target.mesh, target)
+      for (const target of panel.targets) if (target.visible) this.#targets.set(target, panel)
     }
     // Keep desktop windows readable after Fit all pulls the camera back.
     this.#fog.near = fogNear
@@ -364,6 +401,8 @@ export class WorkspaceScene {
         this.#sync(false)
       }
     }
+    if (!immersive) this.#updateMouseHover()
+    for (const panel of this.#windows.values()) panel.updateAffordances()
     this.#renderer.render(this.#scene, immersive ? this.#xrCamera : this.#desktopCamera)
   }
 
@@ -377,7 +416,10 @@ export class WorkspaceScene {
         continue
       }
       this.#filterPose(pointer, alpha)
-      const hit = this.#hit(pointer)
+      const picked = this.#point(pointer)
+      const active = pointer.grab ?? picked
+      if (active) active.panel.highlight(active.part)
+      const hit = picked?.hit
       const axes = pointer.source.gamepad?.axes
       const y = axes?.[3] ?? axes?.[1] ?? 0
       const depth = Math.abs(y) > 0.2 ? y * dt * 2.2 : 0
@@ -408,7 +450,7 @@ export class WorkspaceScene {
     }
   }
 
-  #hit(pointer: Pointer): Hit | undefined {
+  #point(pointer: Pointer) {
     const { ray } = this.#raycaster
     this.#raycaster.near = 0
     this.#raycaster.far = Infinity
@@ -419,12 +461,13 @@ export class WorkspaceScene {
 
   #pick() {
     const hits = this.#raycaster.intersectObjects([...this.#targets.keys()], false) as Hit[]
-    const first: Hit | undefined = hits[0]
-    if (!first) return
-    let nearest = first
+    let nearest: (PickedPart & { hit: Hit }) | undefined
     for (const hit of hits) {
-      if (hit.distance - first.distance > 1e-8) break
-      if (hit.object.parent!.renderOrder > nearest.object.parent!.renderOrder) nearest = hit
+      if (nearest && hit.distance - nearest.hit.distance > 1e-8) break
+      const panel = this.#targets.get(hit.object)!
+      const part = panel.part(hit)
+      if (!part) continue
+      if (!nearest || panel.group.renderOrder > nearest.panel.group.renderOrder) nearest = { panel, part, hit }
     }
     return nearest
   }

@@ -8,18 +8,29 @@ import {
   type MediaRuntime, type View, type Workspace,
 } from './workspace'
 
-const ink = '#e4ebf4'
-const muted = '#a1b1c4'
-export const mint = '#6ae9ce'
-const surface = '#141d2a'
-const line = '#354659'
+const ink = '#eeeeee'
+const muted = '#b0b0b0'
+export const accent = '#dedede'
+const surface = '#232323'
+const line = '#484848'
 const uiPixelsPerMetre = 720 / windowDefaults.width
 const metres = (pixels: number) => pixels / uiPixelsPerMetre
-const frameBorder = 0.004
-const titleHeight = 48
-export const windowTitleHeight = metres(titleHeight)
-const resizeInset = metres(18)
-const resizeOutset = 0.01
+const gripThickness = metres(7)
+const gripOffset = metres(16)
+const gripInset = metres(13)
+const cornerLength = metres(37)
+const cornerHandleLength = cornerLength + metres(8)
+export const windowGripReach = metres(42)
+const chromeGap = windowGripReach + metres(4)
+const backWidth = 114
+const backHeight = 52
+const backMargin = metres(24)
+const backReach = metres(5)
+const dimOpacity = 0.38
+const gripDirections = [
+  [-1, 0], [1, 0], [0, -1], [0, 1],
+  [-1, -1], [1, -1], [-1, 1], [1, 1],
+] as const
 
 const browserMargin = 30
 const cardSize = 186
@@ -43,11 +54,14 @@ export interface Grab {
   update(ray: Ray, depth: number): void
   finish?(commit: boolean): void
 }
-export interface Target {
-  mesh: Face
-  panel: SceneWindow
-  press(hit: Hit, ray: Ray): Grab | void
+interface Grip {
+  x: -1 | 0 | 1
+  y: -1 | 0 | 1
+  horizontal?: Face
+  vertical?: Face
 }
+type Affordance = Grip | 'back'
+export type WindowPart = Affordance | 'body' | 'controls'
 type Action = () => void
 interface ButtonArea {
   x: number
@@ -60,6 +74,14 @@ interface ButtonArea {
 function face(group: Group, color: string | number, geometry = new PlaneGeometry()) {
   const mesh = new Mesh(geometry, new MeshBasicMaterial({ color, toneMapped: false }))
   group.add(mesh)
+  return mesh
+}
+
+function gripFace(group: Group) {
+  const mesh = face(group, accent)
+  mesh.material.transparent = true
+  mesh.material.depthWrite = false
+  mesh.visible = false
   return mesh
 }
 
@@ -99,8 +121,12 @@ class Panel {
   width = 0
   height = 0
 
-  constructor(group: Group) {
+  constructor(group: Group, private readonly transparent = false) {
     this.mesh = face(group, 0xffffff)
+    if (transparent) {
+      this.mesh.material.transparent = true
+      this.mesh.material.depthWrite = false
+    }
   }
 
   layout(width: number, height: number, y: number) {
@@ -126,8 +152,11 @@ class Panel {
     }
     const ctx = this.#context
     ctx.setTransform(width / this.width, 0, 0, height / this.height, 0, 0)
-    ctx.fillStyle = surface
-    ctx.fillRect(0, 0, this.width, this.height)
+    if (this.transparent) ctx.clearRect(0, 0, this.width, this.height)
+    else {
+      ctx.fillStyle = surface
+      ctx.fillRect(0, 0, this.width, this.height)
+    }
     this.#buttons = []
     draw(ctx)
     this.#texture.needsUpdate = true
@@ -177,19 +206,21 @@ function text(
   ctx.fillText(value, x, y)
 }
 
-function chip(ctx: CanvasRenderingContext2D, label: string, x: number, y: number, w: number, h: number, active = false) {
-  rect(ctx, x, y, w, h, active ? '#396b63' : line, 8)
-  rect(ctx, x + 2, y + 2, w - 4, h - 4, '#202c3d', 7)
+function chip(
+  ctx: CanvasRenderingContext2D, label: string, x: number, y: number, w: number, h: number,
+  active = false, fontSize = 22,
+) {
+  rect(ctx, x, y, w, h, active ? '#575757' : '#373737', 8)
   ctx.textAlign = 'center'
-  text(ctx, label, x + w / 2, y + h / 2 + 1, 22, active ? mint : ink, 620, w - 8)
+  text(ctx, label, x + w / 2, y + h / 2 + 1, fontSize, ink, 620, w - 8)
   ctx.textAlign = 'left'
 }
 
 function slider(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, progress: number) {
   const position = x + w * clamp(progress, 0, 1)
   rect(ctx, x, y - 3, w, 6, line, 3)
-  rect(ctx, x, y - 3, position - x, 6, mint, 3)
-  ctx.fillStyle = mint
+  rect(ctx, x, y - 3, position - x, 6, accent, 3)
+  ctx.fillStyle = accent
   ctx.beginPath()
   ctx.arc(position, y, 8, 0, Math.PI * 2)
   ctx.fill()
@@ -217,8 +248,8 @@ function panelPlane(point: Vector3, orientation: Quaternion) {
 }
 
 function xyDrag(
-  view: View, point: Vector3, orientation: Quaternion,
-  apply: (dx: number, dy: number) => void, finish?: (moved: boolean) => void,
+  point: Vector3, orientation: Quaternion, apply: (dx: number, dy: number) => void,
+  threshold = 0.001, finish?: (moved: boolean) => void,
 ): Grab {
   const plane = panelPlane(point, orientation)
   const inverse = orientation.clone().invert()
@@ -228,7 +259,7 @@ function xyDrag(
     update(ray) {
       if (!ray.intersectPlane(plane, intersect)) return
       const { x: dx, y: dy } = intersect.sub(point).applyQuaternion(inverse)
-      moved ||= Math.hypot(dx, dy) >= Math.min(0.022, view.width * 0.035)
+      moved ||= Math.hypot(dx, dy) >= threshold
       if (moved) apply(dx, dy)
     },
     finish(commit) { if (commit) finish?.(moved) },
@@ -237,20 +268,24 @@ function xyDrag(
 
 export class SceneWindow {
   readonly group = new Group()
-  readonly targets: Target[]
   #view: View
-  #back = face(this.group, line)
-  #frame = surround(this.group, line)
-  #screen = surround(this.group, '#090e15')
+  #back = face(this.group, surface)
+  #screen = surround(this.group, surface)
   #media = face(this.group, 0xffffff)
   #hitbox = face(this.group, 0xffffff)
-  #title = new Panel(this.group)
   #controls = new Panel(this.group)
   #message = new Panel(this.group)
+  #returnButton = new Panel(this.group, true)
+  #grips: Grip[] = gripDirections.map(([x, y]) => ({
+    x, y,
+    horizontal: y ? gripFace(this.group) : undefined,
+    vertical: x ? gripFace(this.group) : undefined,
+  }))
+  #highlighted = new Set<Affordance>()
+  readonly targets = [this.#hitbox, this.#controls.mesh]
   #browser?: FileBrowser
   #runtime?: MediaRuntime
   #texture?: Texture
-  #selected = false
   #immersive = true
   #lastControls = ''
   #lastMessage = ''
@@ -263,24 +298,25 @@ export class SceneWindow {
     // A controller can reach the back of a window even when it faces the headset.
     this.#back.material.side = BackSide
     this.#hitbox.material.side = DoubleSide
-    this.targets = [
-      { mesh: this.#hitbox, panel: this, press: (hit, ray) => this.#body(hit, ray) },
-      { mesh: this.#controls.mesh, panel: this, press: (hit, ray) => this.#control(hit, ray) },
-    ]
+    const button = this.#returnButton.mesh
+    button.visible = false
+    // Draw over the coplanar media without moving the button's hit area forward.
+    button.material.polygonOffset = true
+    button.material.polygonOffsetFactor = -1
+    button.material.polygonOffsetUnits = -1
     this.#layout()
-    this.#paintFrame()
+    this.#returnButton.paint(ctx => chip(ctx, '← Back', 0, 0, backWidth, backHeight, true, 26))
   }
 
   get id() { return this.#view.id }
   get runtime() { return this.#runtime }
 
   get radius() {
-    const frame = this.#frame
-    const top = frame.position.y + frame.scale.y / 2
+    const { width, height } = this.#size
     const bottom = this.#controls.mesh.visible
-      ? this.#controls.mesh.position.y - this.#controls.mesh.scale.y / 2
-      : frame.position.y - frame.scale.y / 2
-    return Math.hypot(frame.scale.x / 2, Math.max(top, -bottom))
+      ? -this.#controls.mesh.position.y + this.#controls.mesh.scale.y / 2
+      : height / 2 + windowGripReach
+    return Math.hypot(width / 2 + windowGripReach, bottom)
   }
 
   get #size() {
@@ -292,9 +328,8 @@ export class SceneWindow {
     }
   }
 
-  sync(view: View, selected: boolean, runtime: MediaRuntime | undefined, immersive: boolean) {
+  sync(view: View, runtime: MediaRuntime | undefined, immersive: boolean) {
     const runtimeChanged = runtime !== this.#runtime
-    const repaint = selected !== this.#selected || runtimeChanged || view.media?.name !== this.#view.media?.name
     const createBrowser = !runtime && !this.#browser
     if (createBrowser) this.#browser = new FileBrowser(this.group, this.workspace, view.id, this.end)
     if (runtimeChanged) {
@@ -304,16 +339,12 @@ export class SceneWindow {
       this.#media.material.map = null
       this.#lastControls = ''
     }
-    const previousTitleWidth = this.#title.width
     const relayout = view !== this.#view || runtimeChanged || createBrowser || immersive !== this.#immersive
     if (relayout) {
       this.#view = view
       this.#immersive = immersive
       this.#layout()
     }
-    this.#selected = selected
-    if (repaint || this.#title.width !== previousTitleWidth) this.#paintFrame()
-
     if (this.#browser) this.#browser.mesh.visible = !runtime
     if (!runtime) {
       this.#screen.visible = false
@@ -349,11 +380,64 @@ export class SceneWindow {
     if (this.#controls.mesh.visible) this.#paintControls(runtime)
   }
 
+  part(hit: Hit): WindowPart | undefined {
+    if (hit.object === this.#controls.mesh) return 'controls'
+    const uv = hit.uv!
+    const { width, height } = this.#size
+    const x = (uv.x - 0.5) * this.#hitbox.scale.x
+    const y = (uv.y - 0.5) * this.#hitbox.scale.y
+    const button = this.#returnButton.mesh
+    if (this.#view.media && Math.abs(x - button.position.x) <= button.scale.x / 2 + backReach
+      && Math.abs(y - button.position.y) <= button.scale.y / 2 + backReach) return 'back'
+
+    const dx = Math.abs(x) - width / 2
+    const dy = Math.abs(y) - height / 2
+    const nearX = dx >= -gripInset
+    const nearY = dy >= -gripInset
+    if (!nearX && !nearY) return 'body'
+    const xSide = nearX || dx >= -cornerLength ? Math.sign(x) : 0
+    const ySide = nearY || dy >= -cornerLength ? Math.sign(y) : 0
+    return this.#grips.find(grip => grip.x === xSide && grip.y === ySide)
+  }
+
+  highlight(part: WindowPart) {
+    if (part === 'back' || typeof part !== 'string') this.#highlighted.add(part)
+  }
+
+  updateAffordances() {
+    const visible = this.#highlighted.size > 0
+    for (const grip of this.#grips) {
+      const opacity = this.#highlighted.has(grip) ? 1 : dimOpacity
+      if (grip.horizontal) {
+        grip.horizontal.visible = visible
+        grip.horizontal.material.opacity = opacity
+      }
+      if (grip.vertical) {
+        grip.vertical.visible = visible
+        grip.vertical.material.opacity = opacity
+      }
+    }
+    const button = this.#returnButton.mesh
+    button.visible = visible && Boolean(this.#view.media)
+    button.material.opacity = this.#highlighted.has('back') ? 1 : dimOpacity
+    this.#highlighted.clear()
+  }
+
+  press(part: WindowPart, hit: Hit, ray: Ray) {
+    this.#focus()
+    if (typeof part !== 'string') {
+      return part.x && part.y ? this.#resize(hit, part.x, part.y) : this.#move(hit)
+    }
+    if (part === 'body') return this.#body(hit)
+    if (part === 'controls') return this.#control(hit, ray)
+    if (part === 'back') this.workspace.back(this.id)
+  }
+
   dispose() {
     this.group.removeFromParent()
     this.#texture?.dispose()
     this.#browser?.dispose()
-    for (const panel of [this.#title, this.#controls, this.#message]) panel.dispose()
+    for (const panel of [this.#returnButton, this.#controls, this.#message]) panel.dispose()
     for (const child of this.group.children as Face[]) {
       child.geometry.dispose()
       child.material.dispose()
@@ -363,47 +447,36 @@ export class SceneWindow {
   #layout() {
     const view = this.#view
     const { width, height } = this.#size
-    const title = windowTitleHeight
     const compactControls = Math.round(width * uiPixelsPerMetre) < compactControlsWidth
     const controls = metres(compactControls ? 146 : 96)
-    const controlsVisible = Boolean(this.#runtime?.video) && view.controls
-    // The resize hitbox stops at the controls when they share its plane.
-    const bottomOutset = controlsVisible ? frameBorder : resizeOutset
     this.group.position.set(view.x, view.y, view.z)
-    const frameWidth = width + frameBorder * 2
-    const frameHeight = height + title + frameBorder * 2
-    place(this.#back, frameWidth, frameHeight, title / 2)
-    place(this.#frame, frameWidth, frameHeight, title / 2)
-    cutout(this.#frame, width, height + title, 0, title / 2)
+    place(this.#back, width, height, 0)
     place(this.#screen, width, height, 0)
     if (view.media) {
       place(this.#media, width, height, 0)
       cropMedia(this.#media, view)
     }
     this.#browser?.layout(width, height)
-    place(this.#hitbox, width + resizeOutset * 2, height + title + resizeOutset + bottomOutset,
-      (title + resizeOutset - bottomOutset) / 2)
-    this.#title.layout(width, title, (height + title) / 2)
-    this.#message.layout(Math.min(width - frameBorder * 2, metres(450)), metres(65), 0)
+    place(this.#hitbox, width + windowGripReach * 2, height + windowGripReach * 2, 0)
+    this.#returnButton.layout(metres(backWidth), metres(backHeight), height / 2 - backMargin - metres(backHeight) / 2)
+    this.#returnButton.mesh.position.x = -width / 2 + backMargin + metres(backWidth) / 2
+    this.#message.layout(Math.min(width, metres(450)), metres(65), 0)
     cutout(this.#screen, this.#message.mesh.scale.x, this.#message.mesh.scale.y, 0, 0)
-    this.#controls.layout(width, controls, -(height + controls) / 2 - frameBorder)
-    this.#controls.mesh.visible = controlsVisible
-  }
-
-  #paintFrame() {
-    const color = this.#selected ? mint : line
-    this.#back.material.color.set(color)
-    this.#frame.material.color.set(color)
-    const panel = this.#title
-    const { id, media } = this.#view
-    panel.paint(ctx => {
-      rect(ctx, 0, 0, panel.width, 2, this.#selected ? mint : line)
-      if (media) panel.button('← Back', 26, 11, 90, 32, () => this.workspace.back(id))
-      const titleX = media ? 130 : 26
-      const closeX = panel.width - 66
-      text(ctx, media?.name ?? 'File browser', titleX, 27, 23, ink, 625, closeX - titleX - 12)
-      panel.button('×', closeX, 11, 40, 32, () => this.workspace.close(id))
-    })
+    this.#controls.layout(width, controls, -(height + controls) / 2 - chromeGap)
+    this.#controls.mesh.visible = Boolean(this.#runtime?.video) && view.controls
+    for (const { x, y, horizontal, vertical } of this.#grips) {
+      if (horizontal) {
+        const length = x ? cornerHandleLength : width - 2 * cornerLength
+        place(horizontal, length, gripThickness, y * (height / 2 + gripOffset))
+        horizontal.position.x = x * (width / 2 + gripOffset - (length - gripThickness) / 2)
+      }
+      if (vertical) {
+        const length = y ? cornerHandleLength - gripThickness : height - 2 * cornerLength
+        // The corner's two strokes meet without overlapping when translucent.
+        place(vertical, gripThickness, length, y * (height / 2 + gripOffset - (length + gripThickness) / 2))
+        vertical.position.x = x * (width / 2 + gripOffset)
+      }
+    }
   }
 
   #paintControls(runtime: MediaRuntime) {
@@ -417,12 +490,11 @@ export class SceneWindow {
     if (signature === this.#lastControls) return
     this.#lastControls = signature
     panel.paint(ctx => {
-      rect(ctx, 0, 0, width, 2, line)
       const seekWidth = width - 2 * seekX
       const fraction = (t: number) => media.duration ? t / media.duration : 0
       slider(ctx, seekX, seekY, seekWidth, fraction(media.time))
-      if (view.loopStart) rect(ctx, seekX + seekWidth * fraction(view.loopStart), seekY - 8, 3, 16, '#f3c387')
-      if (view.loopEnd !== null) rect(ctx, seekX + seekWidth * fraction(view.loopEnd), seekY - 8, 3, 16, '#f3c387')
+      if (view.loopStart) rect(ctx, seekX + seekWidth * fraction(view.loopStart), seekY - 8, 3, 16, ink)
+      if (view.loopEnd !== null) rect(ctx, seekX + seekWidth * fraction(view.loopEnd), seekY - 8, 3, 16, ink)
       const compact = width < compactControlsWidth
       const gap = compact ? 6 : 15
       const muteX = width - (compact ? 6 : 25) - 130
@@ -440,6 +512,15 @@ export class SceneWindow {
   }
 
   #focus() { this.workspace.select(this.#view.id) }
+
+  #move(hit: Hit) {
+    if (this.#immersive) return this.#moveInVr(hit)
+    // Keep mouse drags at the same depth as the initial grab.
+    const { id, x, y } = this.#view
+    return xyDrag(hit.point, new Quaternion(), (dx, dy) => {
+      this.workspace.patch(id, { x: clamp(x + dx, -100, 100), y: clamp(y + dy, -100, 100) })
+    })
+  }
 
   #moveInVr(hit: Hit): Grab {
     const previousPosition = this.group.position.clone()
@@ -467,7 +548,7 @@ export class SceneWindow {
     let lastWidth = view.width
     let lastHeight = height
     browser?.startResize()
-    return xyDrag(view, hit.point, orientation, (dx, dy) => {
+    return xyDrag(hit.point, orientation, (dx, dy) => {
       const size = resizedDimensions(view, dx, dy, x, y, browser ? browserMinimum : limits)
       const nextHeight = size.height ?? height
       if (size.width === lastWidth && nextHeight === lastHeight) return
@@ -484,29 +565,11 @@ export class SceneWindow {
     })
   }
 
-  #body(hit: Hit, ray: Ray) {
+  #body(hit: Hit) {
     const view = this.#view
-    this.#focus()
-    const local = this.group.worldToLocal(hit.point.clone())
-    const { width, height } = this.#size
-    const edgeX = Math.abs(local.x) > width / 2 - resizeInset ? Math.sign(local.x) : 0
-    const edgeY = local.y >= height / 2 + metres(titleHeight - 10) ? 1
-      : local.y <= -height / 2 + resizeInset ? -1 : 0
-    if (edgeX || edgeY) return this.#resize(hit, edgeX, edgeY)
-    if (local.y >= height / 2) {
-      const normal = new Vector3(0, 0, 1).applyQuaternion(this.group.quaternion)
-      const panel = this.#title
-      if (ray.direction.dot(normal) >= 0) return
-      const pressed = panel.press((local.x / panel.mesh.scale.x + 0.5) * panel.width,
-        (height / 2 + panel.mesh.scale.y - local.y) / panel.mesh.scale.y * panel.height)
-      if (pressed) return
-      if (this.#immersive) return this.#moveInVr(hit)
-      // Keep mouse drags at the same depth as the initial grab.
-      return xyDrag(view, hit.point, new Quaternion(), (dx, dy) => {
-        this.workspace.patch(view.id, { x: clamp(view.x + dx, -100, 100), y: clamp(view.y + dy, -100, 100) })
-      })
-    }
     if (!view.media) {
+      const local = this.group.worldToLocal(hit.point.clone())
+      const { width, height } = this.#size
       this.#browser?.press(local.x / width + 0.5, 0.5 - local.y / height)
       return
     }
@@ -516,11 +579,11 @@ export class SceneWindow {
     const overflow = mediaOverflow(view)
     const canPan = runtime.snapshot().ready && (overflow.x > 0 || overflow.y > 0)
     if (!canPan && !runtime.video) return
-    return xyDrag(view, hit.point, this.group.quaternion, (dx, dy) => {
+    return xyDrag(hit.point, this.group.quaternion, (dx, dy) => {
       if (!canPan) return
       const pan = panned(view, dx, dy)
       if (pan.panX !== this.#view.panX || pan.panY !== this.#view.panY) this.workspace.patch(view.id, pan)
-    }, moved => {
+    }, Math.min(0.022, view.width * 0.035), moved => {
       if (!moved && runtime.video) this.workspace.patch(view.id, { controls: !view.controls })
     })
   }
@@ -528,7 +591,6 @@ export class SceneWindow {
   #control(hit: Hit, ray: Ray) {
     const runtime = this.#runtime
     if (!runtime?.video) return
-    this.#focus()
     const panel = this.#controls
     const { width, height } = panel
     const x = hit.uv!.x * width
@@ -583,7 +645,7 @@ class FileBrowser {
     }
     const panel = this.#panel
     const { width, height } = panel
-    const compact = width < 530
+    const compact = width < (immersive ? 618 : 530)
     const headerExtra = compact ? compactHeaderExtra : 0
     const firstRowY = gridTop + headerExtra
     const innerWidth = width - 2 * browserMargin
@@ -607,14 +669,17 @@ class FileBrowser {
       const path = listing.path ? `${listing.rootName} / ${listing.path}` : listing.rootName
       const pathX = listing.path ? 176 : browserMargin
       const right = width - browserMargin
-      const refreshX = right - (immersive ? 197 : 98)
+      const closeX = right - 78
+      const exitX = closeX - 99
+      const refreshX = (immersive ? exitX : closeX) - 107
       const pathRight = compact ? right : refreshX - 10
       text(ctx, path, pathX, 33, 22, muted, 560, pathRight - pathX)
       panel.button('Refresh', refreshX, 14 + headerExtra, 98, 38, () => void this.workspace.navigate(this.id, listing.path))
-      if (immersive) panel.button('Exit VR', right - 90, 14 + headerExtra, 90, 38, this.end)
+      if (immersive) panel.button('Exit VR', exitX, 14 + headerExtra, 90, 38, this.end)
+      panel.button('Close', closeX, 14 + headerExtra, 78, 38, () => this.workspace.close(this.id))
       rect(ctx, browserMargin, 63 + headerExtra, innerWidth, 2, line)
       if (error || busy) {
-        text(ctx, error || 'Loading…', browserMargin, 86 + headerExtra, 20, error ? '#f3c387' : muted, 520, innerWidth)
+        text(ctx, error || 'Loading…', browserMargin, 86 + headerExtra, 20, error ? ink : muted, 520, innerWidth)
       }
       if (!listing.entries.length && !busy && !error) {
         text(ctx, 'No media in this folder.', browserMargin, firstRowY + 17, 23, muted, 520, innerWidth)
@@ -643,12 +708,12 @@ class FileBrowser {
 
   #card(ctx: CanvasRenderingContext2D, item: LibraryEntry, x: number, y: number) {
     rect(ctx, x, y, cardSize, cardSize, line, 8)
-    rect(ctx, x + 2, y + 2, cardSize - 4, cardSize - 4, '#1c2939', 7)
+    rect(ctx, x + 2, y + 2, cardSize - 4, cardSize - 4, '#2e2e2e', 7)
     text(ctx, item.name, x + 12, y + cardSize - 17, 22, ink, 550, cardSize - 24)
     if (item.kind === 'folder') {
       const iconX = x + (cardSize - 67) / 2
-      rect(ctx, iconX, y + 54, 41, 16, '#648d9e', 5)
-      rect(ctx, iconX, y + 64, 67, 42, '#9dbcc7', 5)
+      rect(ctx, iconX, y + 54, 41, 16, '#858585', 5)
+      rect(ctx, iconX, y + 64, 67, 42, '#b5b5b5', 5)
       this.#panel.action(x, y, cardSize, cardSize, () => void this.workspace.navigate(this.id, item.path))
       return
     }
@@ -661,7 +726,7 @@ class FileBrowser {
     }
     const destW = cardSize - 16
     const destH = cardSize - 42
-    rect(ctx, x + 8, y + 8, destW, destH, '#293847', 4)
+    rect(ctx, x + 8, y + 8, destW, destH, '#3a3a3a', 4)
     if (image.complete && image.naturalWidth) {
       const ratio = Math.min(destW / image.naturalWidth, destH / image.naturalHeight)
       const w = image.naturalWidth * ratio
