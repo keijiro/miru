@@ -1,12 +1,12 @@
 import {
   BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Fog, GridHelper, Group, Line, LineBasicMaterial,
-  Mesh, MeshBasicMaterial, PerspectiveCamera, Plane, PlaneGeometry, Quaternion, Ray, Raycaster, Scene,
-  SRGBColorSpace, Texture, Vector3, VideoTexture, WebGLRenderer,
+  Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Plane, PlaneGeometry, Quaternion, Ray, Raycaster, Scene,
+  SphereGeometry, SRGBColorSpace, Texture, Vector3, VideoTexture, WebGLRenderer,
   type Intersection, type XRTargetRaySpace,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import {
-  clamp, formatTime, limits, panned, resizedDimensions, viewHeight,
+  clamp, formatTime, limits, panned, resizedDimensions, viewHeight, windowDefaults,
   type MediaRuntime, type View, type Workspace,
 } from './workspace'
 
@@ -25,7 +25,7 @@ interface Grab {
 }
 interface Target {
   mesh: Face
-  panel?: XRWindow
+  panel: XRWindow
   press(hit: Hit, ray: Ray): Grab | void
 }
 type Action = () => void
@@ -170,12 +170,14 @@ class XRWindow {
   #title = new Panel(this.group, 660, 48)
   #controls = new Panel(this.group, 660, 140)
   #message = new Panel(this.group, 480, 65)
+  #browser?: XRBrowser
+  #runtime?: MediaRuntime
   #texture?: Texture
   #selected = false
   #lastControls = ''
   #lastMessage = ''
 
-  constructor(private readonly workspace: Workspace, view: View, readonly runtime: MediaRuntime) {
+  constructor(private readonly workspace: Workspace, view: View, private readonly end: Action) {
     this.#view = view
     this.#hitbox.material.visible = false
     this.#message.mesh.visible = false
@@ -192,19 +194,37 @@ class XRWindow {
     this.#paintFrame()
   }
 
-  sync(view: View, selected: boolean) {
-    const repaint = selected !== this.#selected || view.media.name !== this.#view.media.name
-    if (view !== this.#view) {
+  get runtime() { return this.#runtime }
+
+  sync(view: View, selected: boolean, runtime: MediaRuntime | undefined) {
+    const runtimeChanged = runtime !== this.#runtime
+    const repaint = selected !== this.#selected || runtimeChanged || view.media?.name !== this.#view.media?.name
+    const createBrowser = !runtime && !this.#browser
+    if (createBrowser) this.#browser = new XRBrowser(this.group, this.workspace, view.id, this.end)
+    if (runtimeChanged) {
+      this.#runtime = runtime
+      this.#texture?.dispose()
+      this.#texture = undefined
+      this.#media.material.map = null
+      this.#lastControls = ''
+    }
+    if (view !== this.#view || runtimeChanged || createBrowser) {
       this.#view = view
       this.#layout()
     }
     this.#selected = selected
     if (repaint) this.#paintFrame()
 
-    const media = this.runtime.snapshot()
+    if (this.#browser) this.#browser.mesh.visible = !runtime
+    if (!runtime) {
+      this.#media.visible = false
+      this.#message.mesh.visible = false
+      this.#browser?.sync(view.browser)
+      return
+    }
+    const media = runtime.snapshot()
     if (media.ready && !this.#texture) {
-      const image = this.runtime.element
-      const texture = this.runtime.video ? new VideoTexture(this.runtime.video) : new Texture(image)
+      const texture = runtime.video ? new VideoTexture(runtime.video) : new Texture(runtime.element)
       texture.colorSpace = SRGBColorSpace
       texture.needsUpdate = true
       this.#texture = texture
@@ -241,7 +261,7 @@ class XRWindow {
       update: (ray, depth, current) => {
         if (depth) distance = clamp(distance + depth, limits.near, limits.far)
         ray.at(distance, position).add(rotatedOffset.copy(offset).applyQuaternion(current))
-        position.set(clamp(position.x, -100, 100), clamp(position.y, -100, 100), clamp(position.z, -limits.far, -limits.near))
+        position.set(clamp(position.x, -100, 100), clamp(position.y, -100, 100), clamp(position.z, -limits.far, limits.far))
         next.copy(current).multiply(relativeOrientation).normalize()
         if (previousPosition.distanceToSquared(position) < 1e-8 && next.angleTo(previousOrientation) < 0.0001) return
         previousPosition.copy(position)
@@ -257,6 +277,7 @@ class XRWindow {
   dispose() {
     this.group.removeFromParent()
     this.#texture?.dispose()
+    this.#browser?.dispose()
     for (const panel of [this.#title, this.#controls, this.#message]) panel.dispose()
     for (const child of this.group.children as Face[]) {
       child.geometry.dispose()
@@ -269,40 +290,44 @@ class XRWindow {
     const height = viewHeight(view)
     const border = clamp(view.width * 0.005, 0.004, 0.014)
     const title = view.width * 48 / 660
-    const controls = view.width * (this.runtime.video ? 140 : 47) / 660
+    const controls = view.width * (this.#runtime?.video ? 140 : 47) / 660
     this.group.position.set(view.x, view.y, view.z)
     this.group.quaternion.fromArray(view.orientation)
     place(this.#frame, view.width + border * 2, height + title + border * 2, title / 2, -0.01)
     place(this.#screen, view.width, height, 0, 0)
-    visibleMedia(this.#media, view)
+    if (view.media) visibleMedia(this.#media, view)
+    if (this.#browser) place(this.#browser.mesh, view.width, height, 0, 0.003)
     place(this.#hitbox, view.width + border * 5, height + border * 5, 0, 0.011)
     place(this.#title.mesh, view.width + border * 2, title, (height + title) / 2, 0.015)
     place(this.#message.mesh, view.width * 0.63, view.width * 0.086, 0, 0.009)
     place(this.#controls.mesh, view.width, controls, -(height + controls) / 2 - border, 0.017)
-    this.#controls.mesh.visible = view.controls
+    this.#controls.mesh.visible = Boolean(this.#runtime) && view.controls
   }
 
   #paintFrame() {
     this.#frame.material.color.set(this.#selected ? mint : line)
     this.#title.paint(ctx => {
       rect(ctx, 0, 0, 660, 2, this.#selected ? mint : line)
-      const badge = this.runtime.video ? 'VID' : 'IMG'
-      text(ctx, badge, 15, 25, 17, this.#selected ? mint : muted, 700)
-      text(ctx, this.#view.media.name, 68, 25, 23, ink, 625, 529)
+      const { media } = this.#view
+      if (media) chip(ctx, '← Back', 12, 7, 90, 35)
+      const titleX = media ? 117 : 16
+      text(ctx, media?.name ?? 'File browser', titleX, 25, 23, ink, 625, 600 - titleX)
       chip(ctx, '×', 613, 7, 40, 35)
     })
   }
 
   #paintControls() {
     const view = this.#view
-    const media = this.runtime.snapshot()
+    const runtime = this.#runtime
+    if (!runtime) return
+    const media = runtime.snapshot()
     const signature = JSON.stringify([
       view.zoom, view.loopStart, view.loopEnd, view.muted, media.duration, Math.floor(media.time * 10), media.playing,
     ])
     if (signature === this.#lastControls) return
     this.#lastControls = signature
     this.#controls.paint(ctx => {
-      const hasVideo = Boolean(this.runtime.video)
+      const hasVideo = Boolean(runtime.video)
       const zoomY = hasVideo ? 115 : 70
       rect(ctx, 0, 0, 660, 2, line)
       if (hasVideo) {
@@ -338,7 +363,7 @@ class XRWindow {
         ...size,
         x: clamp(view.x + offset.x, -100, 100),
         y: clamp(view.y + offset.y, -100, 100),
-        z: clamp(view.z + offset.z, -limits.far, -limits.near),
+        z: clamp(view.z + offset.z, -limits.far, limits.far),
       })
     })
   }
@@ -352,6 +377,10 @@ class XRWindow {
     const edgeX = Math.abs(x) > 0.463 ? Math.sign(x) : 0
     const edgeY = Math.abs(y) > 0.449 ? Math.sign(y) : 0
     if (edgeX || edgeY) return this.#resize(hit, edgeX, edgeY)
+    if (!view.media) {
+      this.#browser?.press(x + 0.5, 0.5 - y)
+      return
+    }
 
     return xyDrag(view, hit.point, this.group.quaternion, (dx, dy) => {
       if (view.zoom > 1) this.workspace.patch(view.id, panned(view, dx, dy))
@@ -363,8 +392,15 @@ class XRWindow {
   #header(hit: Hit) {
     this.#focus()
     const uv = hit.uv!
-    if (uv.x > 0.928 && uv.y > 0.10 && uv.y < 0.87) {
+    const px = uv.x * 660
+    const py = (1 - uv.y) * 48
+    const onButton = py >= 7 && py <= 42
+    if (onButton && px >= 613 && px <= 653) {
       this.workspace.close(this.#view.id)
+      return
+    }
+    if (this.#view.media && onButton && px >= 12 && px <= 102) {
+      this.workspace.back(this.#view.id)
       return
     }
     const x = uv.x < 0.04 ? -1 : uv.x > 0.96 ? 1 : 0
@@ -373,19 +409,21 @@ class XRWindow {
   }
 
   #control(hit: Hit, ray: Ray) {
+    const runtime = this.#runtime
+    if (!runtime) return
     this.#focus()
     const x = hit.uv!.x * 660
     const y = (1 - hit.uv!.y) * 140
-    const media = this.runtime.snapshot()
-    if (this.runtime.video && y >= 38 && y <= 87) {
-      if (x >= 19 && x <= 83) this.runtime.togglePlayback()
-      else if (x >= 321 && x <= 398) this.runtime.mark('start')
-      else if (x >= 413 && x <= 490) this.runtime.mark('end')
+    const media = runtime.snapshot()
+    if (runtime.video && y >= 38 && y <= 87) {
+      if (x >= 19 && x <= 83) runtime.togglePlayback()
+      else if (x >= 321 && x <= 398) runtime.mark('start')
+      else if (x >= 413 && x <= 490) runtime.mark('end')
       else if (x >= 505 && x <= 635) this.workspace.patch(this.#view.id, { muted: !this.#view.muted })
       return
     }
-    const seeking = this.runtime.video && y < 36 && media.duration > 0
-    const zooming = (!this.runtime.video || y > 93) && x >= 134 && x <= 552
+    const seeking = runtime.video && y < 36 && media.duration > 0
+    const zooming = (!runtime.video || y > 93) && x >= 134 && x <= 552
     if (!seeking && !zooming) return
     const panel = this.#controls.mesh
     const plane = panelPlane(hit.point, this.group.quaternion)
@@ -393,7 +431,7 @@ class XRWindow {
     const update = (current: Ray) => {
       if (!current.intersectPlane(plane, point)) return
       const pos = (panel.worldToLocal(point).x + 0.5) * 660
-      if (seeking) this.runtime.seek(clamp((pos - 25) / 610, 0, 1) * media.duration)
+      if (seeking) runtime.seek(clamp((pos - 25) / 610, 0, 1) * media.duration)
       else this.workspace.zoom(this.#view.id, 1 + clamp((pos - 152) / 382, 0, 1) * (limits.maxZoom - 1))
     }
     update(ray)
@@ -410,11 +448,11 @@ interface ButtonArea {
 }
 
 const pageSize = 6
+const browserWidth = 720
+const browserHeight = 566
 
-class XRLibrary {
-  readonly group = new Group()
-  readonly target: Target
-  #panel = new Panel(this.group, 720, 772)
+class XRBrowser {
+  #panel: Panel
   #page = 0
   #buttons: ButtonArea[] = []
   #listing?: DirectoryListing
@@ -423,24 +461,19 @@ class XRLibrary {
   #images = new Map<string, HTMLImageElement>()
   #destroyed = false
 
-  constructor(private readonly workspace: Workspace, private readonly end: Action) {
-    this.group.position.set(-1.43, 0.04, -2.47)
-    this.group.rotation.y = 0.32
-    place(this.#panel.mesh, 0.93, 1, 0, 0)
-    this.target = {
-      mesh: this.#panel.mesh,
-      press: hit => {
-        const x = hit.uv!.x * 720
-        const y = (1 - hit.uv!.y) * 772
-        this.#buttons.find(button => x >= button.x && x <= button.x + button.w && y >= button.y && y <= button.y + button.h)?.run()
-      },
-    }
+  constructor(group: Group, private readonly workspace: Workspace, private readonly id: string, private readonly end: Action) {
+    this.#panel = new Panel(group, browserWidth, browserHeight)
   }
 
-  sync() {
-    if (!this.group.visible) return
-    const state = this.workspace.snapshot()
-    const { listing, busy, error, views } = state
+  get mesh() { return this.#panel.mesh }
+
+  press(u: number, v: number) {
+    const x = u * browserWidth
+    const y = v * browserHeight
+    this.#buttons.find(button => x >= button.x && x <= button.x + button.w && y >= button.y && y <= button.y + button.h)?.run()
+  }
+
+  sync({ listing, busy, error }: View['browser']) {
     if (this.#listing !== listing) {
       if (this.#listing?.path !== listing.path) this.#page = 0
       this.#listing = listing
@@ -449,37 +482,37 @@ class XRLibrary {
     }
     const pageCount = Math.max(1, Math.ceil(listing.entries.length / pageSize))
     this.#page = clamp(this.#page, 0, pageCount - 1)
-    const signature = JSON.stringify([busy, error, this.#page, ...views.map(view => view.media.path)])
+    const signature = JSON.stringify([busy, error, this.#page])
     if (!this.#dirty && signature === this.#signature) return
     this.#signature = signature
     this.#dirty = false
     this.#buttons = []
     this.#panel.paint(ctx => {
-      rect(ctx, 0, 0, 720, 5, '#53998f')
-      text(ctx, 'File browser', 24, 43, 31, ink, 700)
-      this.#button(ctx, 'Exit VR', 575, 21, 121, 42, this.end)
       const parent = listing.path.split('/').slice(0, -1).join('/')
       if (listing.path) {
-        this.#button(ctx, 'Root', 24, 84, 91, 40, () => void this.workspace.navigate(''))
-        this.#button(ctx, 'Up', 125, 84, 78, 40, () => void this.workspace.navigate(parent))
+        this.#button(ctx, 'Root', 30, 14, 66, 38, () => void this.workspace.navigate(this.id, ''))
+        this.#button(ctx, 'Up', 105, 14, 55, 38, () => void this.workspace.navigate(this.id, parent))
       }
       const path = listing.path ? `${listing.rootName} / ${listing.path}` : listing.rootName
-      const pathX = listing.path ? 221 : 25
-      text(ctx, path, pathX, 105, 22, muted, 560, 594 - pathX)
-      this.#button(ctx, 'Refresh', 596, 84, 100, 40, () => void this.workspace.navigate(listing.path))
-      rect(ctx, 24, 142, 672, 2, line)
-      if (error || busy) text(ctx, error || 'Loading…', 25, 169, 20, error ? '#f3c387' : muted, 520, 665)
+      const pathX = listing.path ? 176 : 30
+      text(ctx, path, pathX, 33, 22, muted, 560, 483 - pathX)
+      this.#button(ctx, 'Refresh', 493, 14, 98, 38, () => void this.workspace.navigate(this.id, listing.path))
+      this.#button(ctx, 'Exit VR', 600, 14, 90, 38, this.end)
+      rect(ctx, 30, 63, 660, 2, line)
+      if (error || busy) text(ctx, error || 'Loading…', 30, 86, 20, error ? '#f3c387' : muted, 520, 660)
       if (!listing.entries.length && !busy && !error) {
-        text(ctx, 'No media in this folder.', 25, 220, 23, muted, 520, 665)
+        text(ctx, 'No media in this folder.', 30, 122, 23, muted, 520, 660)
       }
       listing.entries.slice(this.#page * pageSize, (this.#page + 1) * pageSize).forEach((item, i) => {
-        this.#card(ctx, item, i, views.some(view => view.media.path === item.path))
+        this.#card(ctx, item, i)
       })
-      if (this.#page > 0) this.#button(ctx, 'Previous', 24, 714, 112, 40, () => this.#page--)
-      if (this.#page + 1 < pageCount) this.#button(ctx, 'Next', 584, 714, 112, 40, () => this.#page++)
-      ctx.textAlign = 'center'
-      text(ctx, `${this.#page + 1} / ${pageCount}`, 360, 735, 20, muted)
-      ctx.textAlign = 'left'
+      if (this.#page > 0) this.#button(ctx, 'Previous', 30, 501, 112, 36, () => this.#page--)
+      if (this.#page + 1 < pageCount) this.#button(ctx, 'Next', 578, 501, 112, 36, () => this.#page++)
+      if (pageCount > 1) {
+        ctx.textAlign = 'center'
+        text(ctx, `${this.#page + 1} / ${pageCount}`, 360, 520, 20, muted)
+        ctx.textAlign = 'left'
+      }
     })
   }
 
@@ -487,22 +520,20 @@ class XRLibrary {
     this.#destroyed = true
     this.#images.clear()
     this.#panel.dispose()
-    this.#panel.mesh.geometry.dispose()
-    this.#panel.mesh.material.dispose()
   }
 
-  #card(ctx: CanvasRenderingContext2D, item: LibraryEntry, index: number, open: boolean) {
-    const x = index % 2 === 0 ? 24 : 367
-    const y = 189 + Math.floor(index / 2) * 171
-    const w = 329
-    const h = 155
-    rect(ctx, x, y, w, h, open ? '#538378' : line, 8)
+  #card(ctx: CanvasRenderingContext2D, item: LibraryEntry, index: number) {
+    const x = index % 2 === 0 ? 30 : 367
+    const y = 105 + Math.floor(index / 2) * 129
+    const w = 323
+    const h = 119
+    rect(ctx, x, y, w, h, line, 8)
     rect(ctx, x + 2, y + 2, w - 4, h - 4, '#1c2939', 7)
     if (item.kind === 'folder') {
-      rect(ctx, x + 24, y + 31, 45, 16, '#648d9e', 5)
-      rect(ctx, x + 24, y + 41, 73, 44, '#9dbcc7', 5)
-      text(ctx, item.name, x + 17, y + 124, 24, ink, 650, w - 32)
-      this.#buttons.push({ x, y, w, h, run: () => void this.workspace.navigate(item.path) })
+      rect(ctx, x + 24, y + 21, 41, 16, '#648d9e', 5)
+      rect(ctx, x + 24, y + 31, 67, 42, '#9dbcc7', 5)
+      text(ctx, item.name, x + 17, y + 97, 23, ink, 650, w - 32)
+      this.#buttons.push({ x, y, w, h, run: () => void this.workspace.navigate(this.id, item.path) })
       return
     }
     let image = this.#images.get(item.path)
@@ -512,18 +543,18 @@ class XRLibrary {
       image.src = mediaUrl(item, 'thumbnail')
       this.#images.set(item.path, image)
     }
-    rect(ctx, x + 8, y + 8, w - 16, 102, '#293847', 4)
+    const destW = w - 16
+    const destH = 73
+    rect(ctx, x + 8, y + 8, destW, destH, '#293847', 4)
     if (image.complete && image.naturalWidth) {
-      const destW = w - 16
-      const destH = 102
       const ratio = Math.max(destW / image.naturalWidth, destH / image.naturalHeight)
       const sw = destW / ratio
       const sh = destH / ratio
       ctx.drawImage(image, (image.naturalWidth - sw) / 2, (image.naturalHeight - sh) / 2, sw, sh, x + 8, y + 8, destW, destH)
     }
-    if (item.kind === 'video') chip(ctx, '▶', x + w - 54, y + 67, 36, 30)
-    text(ctx, item.name, x + 12, y + 132, 23, ink, 550, w - 24)
-    this.#buttons.push({ x, y, w, h, run: () => this.workspace.open(item) })
+    if (item.kind === 'video') chip(ctx, '▶', x + w - 54, y + 43, 36, 30)
+    text(ctx, item.name, x + 12, y + 99, 22, ink, 550, w - 24)
+    this.#buttons.push({ x, y, w, h, run: () => this.workspace.open(this.id, item) })
   }
 
   #button(ctx: CanvasRenderingContext2D, label: string, x: number, y: number, w: number, h: number, run: Action) {
@@ -535,6 +566,7 @@ class XRLibrary {
 interface Pointer {
   controller: XRTargetRaySpace
   beam: Line<BufferGeometry, LineBasicMaterial>
+  cursor: Mesh<SphereGeometry, MeshBasicMaterial>
   source?: XRInputSource
   grab?: { panel: XRWindow, action: Grab, button: 'select' | 'squeeze' }
 }
@@ -544,7 +576,6 @@ export class XRWorkspace {
   #scene = new Scene()
   #camera = new PerspectiveCamera(55, 1, 0.04, 80)
   #floor = new GridHelper(70, 70, '#396068', '#263746')
-  #library: XRLibrary
   #windows = new Map<string, XRWindow>()
   #pointers: Pointer[]
   #raycaster = new Raycaster()
@@ -568,10 +599,6 @@ export class XRWorkspace {
     this.#scene.fog = new Fog('#0c1420', 7, 25)
     this.#floor.position.y = -1.58
     this.#scene.add(this.#floor)
-    this.#library = new XRLibrary(workspace, () => {
-      if (this.#session) void this.#session.end().catch(() => {})
-    })
-    this.#scene.add(this.#library.group)
     this.#pointers = [0, 1].map(index => this.#createPointer(index))
   }
 
@@ -584,12 +611,13 @@ export class XRWorkspace {
   dispose() {
     this.#destroyed = true
     this.#renderer.setAnimationLoop(null)
-    this.#library.dispose()
     for (const panel of this.#windows.values()) panel.dispose()
     for (const pointer of this.#pointers) {
       this.#resetPointer(pointer)
       pointer.beam.geometry.dispose()
       pointer.beam.material.dispose()
+      pointer.cursor.geometry.dispose()
+      pointer.cursor.material.dispose()
     }
     this.#floor.dispose()
     this.#renderer.dispose()
@@ -603,8 +631,10 @@ export class XRWorkspace {
     const beam = new Line(geometry, new LineBasicMaterial({ color: mint, transparent: true, opacity: 0.8 }))
     beam.frustumCulled = false
     beam.visible = false
-    this.#scene.add(beam)
-    const pointer: Pointer = { controller, beam }
+    const cursor = new Mesh(new SphereGeometry(0.005, 12, 8), new MeshBasicMaterial({ color: mint, toneMapped: false }))
+    cursor.visible = false
+    this.#scene.add(beam, cursor)
+    const pointer: Pointer = { controller, beam, cursor }
     controller.addEventListener('connected', event => {
       pointer.source = event.data
     })
@@ -630,29 +660,27 @@ export class XRWorkspace {
     this.#sync()
     const hit = this.#hit(pointer)
     const target = hit && this.#targets.get(hit.object)
-    const panel = target?.panel
-    if (button === 'squeeze' && !panel) {
-      this.#toggleLibrary()
+    if (!hit || !target) {
+      if (button === 'select') this.#createWindow(this.#raycaster.ray)
       return
     }
-    if (!hit || !target) return
-    if (panel && this.#pointers.some(other => other.grab?.panel === panel)) return
-    const action = button === 'squeeze' ? panel?.grab(hit, pointer.beam.quaternion) : target.press(hit, this.#raycaster.ray)
-    if (panel && action) pointer.grab = { panel, action, button }
+    const { panel } = target
+    if (this.#pointers.some(other => other.grab?.panel === panel)) return
+    const action = button === 'squeeze' ? panel.grab(hit, pointer.beam.quaternion) : target.press(hit, this.#raycaster.ray)
+    if (action) pointer.grab = { panel, action, button }
   }
 
-  #toggleLibrary() {
-    const library = this.#library.group
-    library.visible = !library.visible
-    if (!library.visible) return
-    const pose = this.#renderer.xr.getCamera()
-    const forward = pose.getWorldDirection(new Vector3()).setY(0).normalize()
-    if (!forward.lengthSq()) return
-    const side = new Vector3(-forward.z, 0, forward.x)
-    library.position.copy(pose.getWorldPosition(new Vector3()))
-      .addScaledVector(forward, 2.47).addScaledVector(side, -1.43)
-    library.rotation.y = Math.atan2(-forward.x, -forward.z) + 0.32
+  #createWindow(ray: Ray) {
+    const position = ray.at(windowDefaults.depth, new Vector3())
+    const viewer = this.#renderer.xr.getCamera().getWorldPosition(new Vector3())
+    const rotation = new Matrix4().lookAt(viewer, position, new Vector3(0, 1, 0))
+    this.workspace.create({
+      x: position.x, y: position.y, z: position.z,
+      orientation: new Quaternion().setFromRotationMatrix(rotation).toArray(),
+    })
   }
+
+  #end = () => { if (this.#session) void this.#session.end().catch(() => {}) }
 
   #finishGrab(pointer: Pointer, commit: boolean) {
     const grab = pointer.grab
@@ -666,25 +694,26 @@ export class XRWorkspace {
     const { views, selected } = this.workspace.snapshot()
     const wanted = new Set(views.map(view => view.id))
     for (const [id, panel] of this.#windows) {
-      const exists = wanted.has(id)
-      if (exists && panel.runtime === this.workspace.runtime(id)) continue
+      if (wanted.has(id)) continue
       for (const pointer of this.#pointers) if (pointer.grab?.panel === panel) this.#finishGrab(pointer, false)
       panel.dispose()
       this.#windows.delete(id)
     }
     this.#targets.clear()
     for (const view of views) {
+      const runtime = this.workspace.runtime(view.id)
       let panel = this.#windows.get(view.id)
       if (!panel) {
-        panel = new XRWindow(this.workspace, view, this.workspace.runtime(view.id))
+        panel = new XRWindow(this.workspace, view, this.#end)
         this.#windows.set(view.id, panel)
         this.#scene.add(panel.group)
       }
-      panel.sync(view, selected === view.id)
+      if (panel.runtime !== runtime) {
+        for (const pointer of this.#pointers) if (pointer.grab?.panel === panel) this.#finishGrab(pointer, false)
+      }
+      panel.sync(view, selected === view.id, runtime)
       for (const target of panel.targets) if (target.mesh.visible) this.#targets.set(target.mesh, target)
     }
-    this.#library.sync()
-    if (this.#library.group.visible) this.#targets.set(this.#library.target.mesh, this.#library.target)
     this.#scene.updateMatrixWorld()
   }
 
@@ -705,9 +734,11 @@ export class XRWorkspace {
       const depth = Math.abs(y) > 0.2 ? y * dt * 2.2 : 0
       pointer.grab?.action.update(this.#raycaster.ray, depth, pointer.beam.quaternion)
       const positions = pointer.beam.geometry.getAttribute('position')
-      positions.setZ(1, -(hit?.distance ?? 4.0))
+      positions.setZ(1, -(hit?.distance ?? windowDefaults.depth))
       positions.needsUpdate = true
       pointer.beam.material.opacity = hit ? 0.82 : 0.27
+      pointer.cursor.visible = !hit && !pointer.grab
+      if (pointer.cursor.visible) this.#raycaster.ray.at(windowDefaults.depth, pointer.cursor.position)
     }
     this.#renderer.render(this.#scene, this.#camera)
   }
@@ -715,6 +746,7 @@ export class XRWorkspace {
   #resetPointer(pointer: Pointer) {
     this.#finishGrab(pointer, false)
     pointer.beam.visible = false
+    pointer.cursor.visible = false
   }
 
   #filterPose({ controller, beam }: Pointer, alpha: number) {

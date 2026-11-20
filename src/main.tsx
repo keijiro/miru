@@ -1,7 +1,7 @@
 import { Box, CircleAlert, Glasses, RefreshCw, X } from 'lucide-react'
 import { createRoot } from 'react-dom/client'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Desktop, Library } from './desktop'
+import { Desktop } from './desktop'
 import { fetchDirectory } from './media-api'
 import { Workspace } from './workspace'
 import type { XRWorkspace } from './xr'
@@ -19,7 +19,6 @@ function Brand() {
 
 function App({ workspace }: { workspace: Workspace }) {
   const state = useSyncExternalStore(workspace.subscribe, workspace.snapshot)
-  const [library, setLibrary] = useState(false)
   const [available, setAvailable] = useState(false)
   const [active, setActive] = useState(false)
   const [pending, setPending] = useState(false)
@@ -93,10 +92,7 @@ function App({ workspace }: { workspace: Workspace }) {
         </button>
       </header>
       <div className="app-body">
-        {library && <button type="button" className="library-backdrop" aria-label="Close file browser"
-          onClick={() => setLibrary(false)} />}
-        <Library workspace={workspace} state={state} visible={library} dismiss={() => setLibrary(false)} />
-        <Desktop workspace={workspace} state={state} showLibrary={() => setLibrary(true)} />
+        <Desktop workspace={workspace} state={state} />
       </div>
       <div className={`xr-output${active ? ' is-active' : ''}`} ref={output} aria-hidden="true" />
       {error && <div className="app-notice" role="alert"><CircleAlert size={18} />{error}

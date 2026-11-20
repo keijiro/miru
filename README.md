@@ -15,7 +15,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173/) in your browser. With the default configuration, the workspace opens one sample video and one still image on first launch. To run the production build locally, stop the development server, then run `pnpm build` followed by `pnpm preview`. The local Vite server serves the media files.
+Open [http://localhost:5173](http://localhost:5173/) in your browser. On first launch, the workspace is empty. Click empty space to open a file browser window. The default library contains the bundled samples. To run the production build locally, stop the development server, then run `pnpm build` followed by `pnpm preview`. The local Vite server serves the media files.
 
 ## Library configuration
 
@@ -38,7 +38,9 @@ The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP
 
 | Action | How to |
 | --- | --- |
-| Open a view | Click an image or video in the file browser. |
+| Open a window | Click empty space in the workspace. |
+| View a file | Select an image or video in the window's file browser. |
+| Return to the file browser | Click the back arrow in the window's title bar. |
 | Move a view | Drag its title bar. |
 | Adjust depth | Hold `Alt` and scroll over the view. |
 | Resize a view | Drag an edge to change one dimension or a corner to change both. |
@@ -47,13 +49,13 @@ The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP
 | Loop a section of a video | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
 | Fit all views on screen | Click **Fit all** at the top of the workspace. |
 
-miru automatically saves open views, their position, size, depth, VR orientation, zoom and pan, the current folder, playback and mute settings, and loop points in the browser. On startup, videos seek to their loop start. If you close the app with a video paused, it reopens paused at the position where you left it. When you first open a video, it starts muted so the browser can autoplay it.
+miru automatically saves open windows, their position, size, depth, VR orientation, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, videos seek to their loop start. When you first open a video, it starts muted so the browser can autoplay it.
 
 ## WSL2 and Quest Pro
 
 Start the server in WSL2 and open `http://localhost:5173` in Chrome on the same Windows host. Connect your Quest Pro to Virtual Desktop Streamer on Windows and make sure Chrome can access an OpenXR runtime. Turn on **VR mode** at the top of the app. The switch becomes available when Chrome detects a supported session. [WSL localhost access](https://learn.microsoft.com/en-us/windows/wsl/networking) · [WebXR session requirements](https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API/Startup_and_shutdown)
 
-In VR, new views start about 1 m from the default viewpoint. Aim with the controller ray and use the trigger to click or drag. Drag a side or corner to resize the view. To move and rotate a view together, aim at it and hold the squeeze (grip) button. Move and turn the controller to position the view, or tilt the thumbstick up or down while holding it to adjust the distance. Release the button to place the view. Squeeze while aiming away from the views to toggle the file browser. Select **Exit VR** in the file browser or use the desktop switch to end the session.
+In VR, aim at empty space and pull the controller trigger to open a file browser at the cursor, about 1 m from the controller. Use the trigger to select a file, then select **Back** in the title bar to return to its folder. Drag a side or corner to resize the window. To move and rotate a window together, aim at it and hold the squeeze (grip) button. Move and turn the controller to position the window, or tilt the thumbstick up or down while holding it to adjust the distance. Release the button to place the window. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
 
 WebXR support is implemented. The Quest Pro, Virtual Desktop, and Windows Chrome setup still needs hardware testing.
 

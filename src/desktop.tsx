@@ -1,15 +1,15 @@
 import {
-  Box, Check, ChevronRight, CircleAlert, Film, Folder, FolderOpen, Image as ImageIcon,
-  Maximize, Minus, Monitor, Mouse, Move, PanelLeft, Pause, Play, Plus, RefreshCw,
+  ArrowLeft, Check, ChevronRight, CircleAlert, Film, Folder, FolderOpen, Image as ImageIcon,
+  Maximize, Minus, Monitor, Mouse, Move, Pause, Play, Plus, RefreshCw,
   Scan, Volume2, VolumeX, X,
 } from 'lucide-react'
 import {
   useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore,
-  type CSSProperties, type KeyboardEvent, type PointerEvent, type RefObject,
+  type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type RefObject,
 } from 'react'
 import { mediaUrl, type MediaEntry } from './media-api'
 import {
-  clamp, extension, filterMedia, formatTime, limits, panned, resized, viewHeight,
+  clamp, desktopDepth, extension, filterMedia, formatTime, limits, panned, resized, viewHeight, windowDefaults,
   type View, type Workspace,
 } from './workspace'
 
@@ -28,52 +28,44 @@ function Thumbnail({ media }: { media: MediaEntry }) {
   )
 }
 
-export function Library({ workspace, state, visible, dismiss }: {
+function Library({ workspace, view }: {
   workspace: Workspace
-  state: State
-  visible: boolean
-  dismiss: () => void
+  view: View
 }) {
-  const { listing, busy, error, views } = state
+  const { listing, busy, error } = view.browser
+  const content = useRef<HTMLDivElement>(null)
   const crumbs = listing.path ? listing.path.split('/') : []
   const folders = listing.entries.filter(entry => entry.kind === 'folder')
   const media = filterMedia(listing)
-  const opened = new Set(views.map(view => view.media.path))
+
+  useLayoutEffect(() => { if (content.current) content.current.scrollTop = 0 }, [listing.path])
+
   return (
-    <aside className={`library${visible ? ' is-visible' : ''}`} aria-label="File browser">
-      <header className="library-top">
-        <div className="library-heading">
-          <div className="library-icon"><FolderOpen size={18} /></div>
-          <h2>File browser</h2>
-        </div>
-        <div className="library-actions">
-          <button type="button" className="icon-button" title="Refresh" aria-label="Refresh folder"
-            onClick={() => void workspace.navigate(listing.path)} disabled={busy}>
-            <RefreshCw size={16} className={busy ? 'spinning' : ''} />
-          </button>
-          <button type="button" className="icon-button library-dismiss" aria-label="Close file browser" onClick={dismiss}>
-            <X size={18} />
-          </button>
-        </div>
-      </header>
-      <nav className="breadcrumbs" aria-label="Current folder">
-        <Folder size={14} aria-hidden="true" />
-        {[listing.rootName, ...crumbs].map((name, index) => (
-          <span key={index}>
-            {index > 0 && <ChevronRight size={13} />}
-            <button type="button" title={name} aria-current={index === crumbs.length ? 'location' : undefined}
-              onClick={() => void workspace.navigate(crumbs.slice(0, index).join('/'))}>{name}</button>
-          </span>
-        ))}
-      </nav>
-      <div className="library-content" aria-busy={busy}>
+    <div className="library">
+      <div className="library-top">
+        <nav className="breadcrumbs" aria-label="Current folder">
+          <Folder size={14} aria-hidden="true" />
+          {[listing.rootName, ...crumbs].map((name, index) => (
+            <span key={index}>
+              {index > 0 && <ChevronRight size={13} />}
+              <button type="button" title={name} aria-current={index === crumbs.length ? 'location' : undefined}
+                onClick={() => void workspace.navigate(view.id, crumbs.slice(0, index).join('/'))}>{name}</button>
+            </span>
+          ))}
+        </nav>
+        <button type="button" className="icon-button" title="Refresh" aria-label="Refresh folder"
+          onClick={() => void workspace.navigate(view.id, listing.path)} disabled={busy}>
+          <RefreshCw size={16} className={busy ? 'spinning' : ''} />
+        </button>
+      </div>
+      <div className="library-content" aria-busy={busy} ref={content}>
         {error && <p className="notice" role="alert"><CircleAlert size={16} />{error}</p>}
         {folders.length > 0 && (
           <section className="library-section">
-            <div className="section-title"><h3>Folders</h3><span>{folders.length}</span></div>
+            <h3 className="section-title">Folders</h3>
             <div className="folder-list">
               {folders.map(folder => (
-                <button type="button" className="folder-row" key={folder.path} onClick={() => void workspace.navigate(folder.path)}>
+                <button type="button" className="folder-row" key={folder.path} onClick={() => void workspace.navigate(view.id, folder.path)}>
                   <Folder size={17} /><span>{folder.name}</span><ChevronRight size={15} className="folder-chevron" />
                 </button>
               ))}
@@ -81,23 +73,19 @@ export function Library({ workspace, state, visible, dismiss }: {
           </section>
         )}
         <section className="library-section">
-          <div className="section-title"><h3>Media</h3><span>{media.length}</span></div>
+          <h3 className="section-title">Media</h3>
           {media.length ? (
             <div className="media-grid">
               {media.map(entry => {
                 const Kind = entry.kind === 'video' ? Film : ImageIcon
-                const isOpen = opened.has(entry.path)
                 return (
-                  <button type="button" key={entry.path} title={entry.name} onClick={() => {
-                    workspace.open(entry)
-                    dismiss()
-                  }} className={`media-card${isOpen ? ' is-open' : ''}`}>
+                  <button type="button" key={entry.path} title={entry.name} onClick={() => workspace.open(view.id, entry)}
+                    className="media-card">
                     <Thumbnail media={entry} key={entry.version} />
                     <span className="media-name">{entry.name}</span>
                     <span className="media-detail">
                       <Kind size={12} />
                       {extension(entry.name)}
-                      {isOpen && <span className="card-open" title="Open" aria-label="Open" />}
                     </span>
                   </button>
                 )
@@ -106,8 +94,7 @@ export function Library({ workspace, state, visible, dismiss }: {
           ) : !busy && <p className="folder-empty">No supported media in this folder.</p>}
         </section>
       </div>
-      <div className="library-footer"><FolderOpen size={15} /><span>Local library</span></div>
-    </aside>
+    </div>
   )
 }
 
@@ -142,6 +129,10 @@ const edges = [
   { name: 'se', xSide: 1, ySide: -1 }, { name: 'sw', xSide: -1, ySide: -1 },
 ]
 
+const noMedia = { ready: false, duration: 0, time: 0, playing: false, error: '' }
+const emptyMediaSnapshot = () => noMedia
+const noMediaSubscription = () => () => {}
+
 function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
   workspace: Workspace
   view: View
@@ -152,15 +143,16 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
   order: number
 }) {
   const runtime = workspace.runtime(view.id)
-  const media = useSyncExternalStore(runtime.subscribe, runtime.snapshot)
+  const media = useSyncExternalStore(runtime?.subscribe ?? noMediaSubscription, runtime?.snapshot ?? emptyMediaSnapshot)
   const target = useRef<HTMLDivElement>(null)
   const pointer = useRef<{ action: Drag, view: View, originX: number, originY: number, pixels: number, moved: boolean, id: number } | null>(null)
-  const Kind = view.media.kind === 'video' ? Film : ImageIcon
+  const title = view.media?.name ?? 'File browser'
+  const Kind = view.media?.kind === 'video' ? Film : view.media ? ImageIcon : FolderOpen
 
   useLayoutEffect(() => {
     const parent = target.current
-    const element = runtime.element
-    if (!parent) return
+    const element = runtime?.element
+    if (!parent || !element) return
     parent.append(element)
     return () => element.remove()
   }, [runtime])
@@ -221,30 +213,37 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
   const width = view.width * pixels
   const height = viewHeight(view) * pixels
   return (
-    <section className={`view-window${selected ? ' is-selected' : ''}`} aria-label={view.media.name} data-view-id={view.id}
+    <section className={`view-window${selected ? ' is-selected' : ''}`} aria-label={title} data-view-id={view.id}
       style={{ left, top: top - height / 2 - 17, width, zIndex: order }}
+      onPointerDown={() => workspace.select(view.id)}
       onFocus={() => workspace.select(view.id)}>
       <div className="view-frame">
         <div className="view-resizable">
           <div className="view-title">
-            <button type="button" className="view-title-drag" aria-label={`Move ${view.media.name}`} title={view.media.name}
+            {runtime && <button type="button" className="icon-button back-view" title="Back to file browser"
+              aria-label="Back to file browser" onClick={() => workspace.back(view.id)}><ArrowLeft size={17} /></button>}
+            <button type="button" className="view-title-drag" aria-label={`Move ${title}`} title={title}
               onPointerDown={event => start(event, { type: 'move' })} {...pointerHandlers} onKeyDown={moveWithKeyboard}>
               <Kind size={15} aria-hidden="true" />
-              <span className="view-name">{view.media.name}</span>
+              <span className="view-name">{title}</span>
             </button>
-            <button type="button" className="icon-button close-view" title="Close view" aria-label={`Close ${view.media.name}`}
+            <button type="button" className="icon-button close-view" title="Close view" aria-label={`Close ${title}`}
               onClick={() => workspace.close(view.id)}><X size={17} /></button>
           </div>
           <div className="view-screen" style={{ height }}>
-            <div className="view-visual" ref={target} style={{
-              transform: `translate(${view.panX * (view.zoom - 1) * 50}%, ${-view.panY * (view.zoom - 1) * 50}%) scale(${view.zoom})`,
-            }} />
-            {media.error && <div className="view-message"><CircleAlert size={17} />{media.error}</div>}
-            {!media.ready && !media.error && <div className="view-message" role="status">Loading…</div>}
-            <button type="button" className={`view-surface${view.zoom > 1 ? ' can-pan' : ''}`}
-              aria-label="View controls" aria-expanded={view.controls}
-              onClick={event => { if (event.detail === 0) workspace.patch(view.id, { controls: !view.controls }) }}
-              onPointerDown={event => start(event, { type: 'content' })} {...pointerHandlers} />
+            {runtime ? (
+              <>
+                <div className="view-visual" ref={target} style={{
+                  transform: `translate(${view.panX * (view.zoom - 1) * 50}%, ${-view.panY * (view.zoom - 1) * 50}%) scale(${view.zoom})`,
+                }} />
+                {media.error && <div className="view-message"><CircleAlert size={17} />{media.error}</div>}
+                {!media.ready && !media.error && <div className="view-message" role="status">Loading…</div>}
+                <button type="button" className={`view-surface${view.zoom > 1 ? ' can-pan' : ''}`}
+                  aria-label="View controls" aria-expanded={view.controls}
+                  onClick={event => { if (event.detail === 0) workspace.patch(view.id, { controls: !view.controls }) }}
+                  onPointerDown={event => start(event, { type: 'content' })} {...pointerHandlers} />
+              </>
+            ) : <Library workspace={workspace} view={view} />}
           </div>
           {edges.map(edge => (
             <div key={edge.name} data-edge={edge.name} className={`resize-edge edge-${edge.name}`}
@@ -252,7 +251,7 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
               {...pointerHandlers} />
           ))}
         </div>
-        {view.controls && (
+        {runtime && view.controls && (
           <div className="view-controls">
             {runtime.video && (
               <div className="video-controls">
@@ -302,16 +301,34 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
   )
 }
 
-export function Desktop({ workspace, state, showLibrary }: {
+export function Desktop({ workspace, state }: {
   workspace: Workspace
   state: State
-  showLibrary: () => void
 }) {
   const stage = useRef<HTMLDivElement>(null)
   const { width, height } = useSize(stage)
   const base = stageBase(width, height)
   const scale = base * state.camera.zoom
-  const ordered = [...state.views].sort((a, b) => a.z - b.z || Number(a.id === state.selected) - Number(b.id === state.selected))
+  const ordered = [...state.views].sort((a, b) => desktopDepth(b) - desktopDepth(a) || Number(a.id === state.selected) - Number(b.id === state.selected))
+  const stacking = new Map(ordered.map((view, index) => [view.id, index + 1]))
+
+  const openWindow = (event: MouseEvent<HTMLButtonElement>) => {
+    const { left, top, width, height } = event.currentTarget.getBoundingClientRect()
+    const scale = stageBase(width, height) * state.camera.zoom
+    if (scale <= 0) return
+    const x = event.detail ? event.clientX - left : width / 2
+    const y = event.detail ? event.clientY - top : height / 2
+    const { width: windowWidth, height: windowHeight, depth } = windowDefaults
+    const halfWidth = Math.min(width / 2, windowWidth * scale / depth / 2)
+    const halfHeight = windowHeight * scale / depth / 2
+    const centerX = clamp(x, halfWidth, width - halfWidth)
+    const centerY = clamp(y, Math.min(height / 2, halfHeight + 34), Math.max(height / 2, height - halfHeight))
+    workspace.create({
+      x: (state.camera.x + (centerX - width / 2) / scale) * depth,
+      y: (state.camera.y + (height / 2 - centerY) / scale) * depth,
+      z: -depth, orientation: [0, 0, 0, 1],
+    })
+  }
 
   useEffect(() => {
     const element = stage.current
@@ -332,9 +349,6 @@ export function Desktop({ workspace, state, showLibrary }: {
     <main className="workspace">
       <header className="workspace-top">
         <div className="workspace-heading">
-          <button type="button" className="icon-button library-toggle" title="File browser" aria-label="Open file browser" onClick={showLibrary}>
-            <PanelLeft size={20} />
-          </button>
           <div>
             <h1>Workspace</h1>
             <p>{state.views.length} {state.views.length === 1 ? 'view' : 'views'} open</p>
@@ -348,22 +362,17 @@ export function Desktop({ workspace, state, showLibrary }: {
       <div className="stage" ref={stage}>
         <div className="stage-dots" aria-hidden="true" />
         <div className="stage-floor" aria-hidden="true"><div /></div>
-        {!ordered.length && (
-          <div className="empty-workspace">
-            <div className="empty-icon"><Box size={36} strokeWidth={1.25} /></div>
-            <h2>Open a view</h2>
-            <p>Select an image or video from the file browser.</p>
-          </div>
-        )}
-        {!!scale && ordered.map((view, index) => (
+        <button type="button" className="stage-background" aria-label="Open a new file browser" onClick={openWindow} />
+        {!!scale && state.views.map(view => (
           <ViewWindow key={view.id} workspace={workspace} view={view} selected={state.selected === view.id}
-            order={index + 1} pixels={scale / -view.z}
-            left={width / 2 + (view.x / -view.z - state.camera.x) * scale}
-            top={height / 2 - (view.y / -view.z - state.camera.y) * scale} />
+            order={stacking.get(view.id) ?? 1} pixels={scale / desktopDepth(view)}
+            left={width / 2 + (view.x / desktopDepth(view) - state.camera.x) * scale}
+            top={height / 2 - (view.y / desktopDepth(view) - state.camera.y) * scale} />
         ))}
       </div>
       <footer className="workspace-footer">
         <div className="desktop-indicator"><Monitor size={15} /><span>Desktop</span></div>
+        <div className="create-hint"><Mouse size={14} />Click empty space to open a window</div>
         <div className="hints">
           <span><Move size={14} />Drag title bar to move</span>
           <span><Maximize size={13} />Drag edges to resize</span>

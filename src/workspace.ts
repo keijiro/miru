@@ -4,7 +4,8 @@ const minWidth = 0.24
 const maxWidth = 6
 const minAutoAspect = 0.52
 const maxAutoAspect = 2.8
-const defaultDepth = 1
+
+export const windowDefaults = { width: 0.56, height: 0.44, depth: 1 }
 
 export const limits = {
   minWidth,
@@ -18,7 +19,9 @@ export const limits = {
 
 export interface View {
   id: string
-  media: MediaEntry
+  media: MediaEntry | null
+  directory: string
+  browser: BrowserState
   x: number
   y: number
   z: number
@@ -37,6 +40,15 @@ export interface View {
   loopEnd: number | null
 }
 
+type SavedView = Omit<View, 'browser'>
+export type WindowPose = Pick<View, 'x' | 'y' | 'z' | 'orientation'>
+
+interface BrowserState {
+  listing: DirectoryListing
+  busy: boolean
+  error: string
+}
+
 interface Camera {
   x: number
   y: number
@@ -44,16 +56,13 @@ interface Camera {
 }
 
 interface Layout {
-  directory: string
-  views: View[]
+  views: SavedView[]
   selected: string | null
   camera: Camera
 }
 
-interface WorkspaceState extends Layout {
-  listing: DirectoryListing
-  busy: boolean
-  error: string
+interface WorkspaceState extends Omit<Layout, 'views'> {
+  views: View[]
   storageError: boolean
 }
 
@@ -71,6 +80,7 @@ const oldSampleFolder = String.fromCodePoint(0x30d5, 0x30a3, 0x30fc, 0x30eb, 0x3
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 export const viewHeight = (view: View) => view.height ?? view.width / clamp(view.aspect, minAutoAspect, maxAutoAspect)
+export const desktopDepth = (view: View) => Math.max(limits.near, Math.abs(view.z))
 export const filterMedia = (listing: DirectoryListing) => listing.entries.filter(entry => entry.kind !== 'folder')
 export const extension = (name: string) => name.slice(name.lastIndexOf('.') + 1).toUpperCase()
 
@@ -81,7 +91,7 @@ function finite(value: unknown, fallback: number, min: number, max: number) {
 function restore(key: string) {
   try {
     const data: unknown = JSON.parse(localStorage.getItem(key) ?? 'null')
-    if (data && typeof data === 'object') return data as Partial<Layout>
+    if (data && typeof data === 'object') return data as Partial<Layout> & { directory?: string }
   } catch {
     // Unavailable storage and older or damaged snapshots are handled at startup.
   }
@@ -104,20 +114,25 @@ function restoreOrientation(value: unknown): View['orientation'] {
   return [0, 0, 0, 1]
 }
 
-function restoreView(view: View, samples: boolean): View | undefined {
-  if (!view || typeof view.id !== 'string' || !view.media || typeof view.media.path !== 'string'
-    || typeof view.media.name !== 'string' || typeof view.media.version !== 'string'
-    || (view.media.kind !== 'video' && view.media.kind !== 'image')) return
+function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: string): View | undefined {
+  if (!view || typeof view.id !== 'string') return
+  const { media } = view
+  if (media !== null && (!media || typeof media.path !== 'string' || typeof media.name !== 'string'
+    || typeof media.version !== 'string' || (media.kind !== 'video' && media.kind !== 'image'))) return
+  const directory = typeof view.directory === 'string' ? view.directory : legacyDirectory
+  const samples = browser.listing.samples
   return {
     id: view.id,
-    media: samples ? { ...view.media, path: restoreSamplePath(view.media.path) } : view.media,
+    media: samples && media ? { ...media, path: restoreSamplePath(media.path) } : media,
+    directory: samples ? restoreSamplePath(directory) : directory,
+    browser,
     x: finite(view.x, 0, -100, 100),
     y: finite(view.y, 0, -100, 100),
-    z: finite(view.z, -defaultDepth, -limits.far, -limits.near),
+    z: finite(view.z, -windowDefaults.depth, -limits.far, limits.far),
     orientation: restoreOrientation(view.orientation),
-    width: finite(view.width, 0.45, limits.minWidth, limits.maxWidth),
+    width: finite(view.width, windowDefaults.width, limits.minWidth, limits.maxWidth),
     height: typeof view.height === 'number' && Number.isFinite(view.height)
-      ? clamp(view.height, limits.minHeight, limits.maxHeight) : undefined,
+      ? clamp(view.height, limits.minHeight, limits.maxHeight) : media ? undefined : windowDefaults.height,
     aspect: finite(view.aspect, 16 / 9, 0.01, 100),
     zoom: finite(view.zoom, 1, 1, limits.maxZoom),
     panX: finite(view.panX, 0, -1, 1),
@@ -131,21 +146,9 @@ function restoreView(view: View, samples: boolean): View | undefined {
   }
 }
 
-function newView(media: MediaEntry, index: number): View {
-  const slots = [
-    { x: -0.14, y: 0.10, width: 0.51 },
-    { x: 0.26, y: -0.13, width: 0.34 },
-    { x: 0.26, y: 0.18, width: 0.34 },
-    { x: -0.25, y: -0.16, width: 0.35 },
-  ]
-  const slot = slots[index % slots.length]
-  const offset = (Math.floor(index / slots.length) % 5) * 0.035
-  return {
-    id: crypto.randomUUID(), media, ...slot, x: slot.x + offset, y: slot.y - offset, z: -defaultDepth,
-    orientation: [0, 0, 0, 1],
-    aspect: 16 / 9, zoom: 1, panX: 0, panY: 0, controls: false,
-    paused: false, muted: true, loopStart: 0, loopEnd: null,
-  }
+const mediaDefaults = {
+  aspect: 16 / 9, zoom: 1, panX: 0, panY: 0, controls: false,
+  paused: false, muted: true, loopStart: 0, loopEnd: null,
 }
 
 export function resizedDimensions(view: View, dx: number, dy: number, xSide: number, ySide: number) {
@@ -196,13 +199,13 @@ export class MediaRuntime {
   #previousTime = 0
   #playRequested = false
 
-  constructor(view: View, private readonly update: (patch: Partial<View>) => void) {
+  constructor(view: View, media: MediaEntry, private readonly update: (patch: Partial<View>) => void) {
     this.#view = view
     const options = { signal: this.#abort.signal }
-    if (view.media.kind === 'image') {
+    if (media.kind === 'image') {
       const image = new Image()
       this.element = image
-      image.alt = view.media.name
+      image.alt = media.name
       image.draggable = false
       image.decoding = 'async'
       image.addEventListener('load', () => {
@@ -210,7 +213,7 @@ export class MediaRuntime {
         this.#publish({ ready: true })
       }, options)
       image.addEventListener('error', this.#fail, options)
-      image.src = mediaUrl(view.media)
+      image.src = mediaUrl(media)
       return
     }
 
@@ -253,7 +256,7 @@ export class MediaRuntime {
       this.play()
     }, options)
     video.addEventListener('error', this.#fail, options)
-    video.src = mediaUrl(view.media)
+    video.src = mediaUrl(media)
   }
 
   subscribe = (listener: () => void) => {
@@ -362,42 +365,38 @@ export class MediaRuntime {
 export class Workspace {
   #state: WorkspaceState
   #key: string
+  #root: BrowserState
   #listeners = new Set<() => void>()
   #runtime = new Map<string, MediaRuntime>()
-  #navigation?: AbortController
+  #navigation = new Map<string, AbortController>()
   #saveTimer?: number
 
   constructor(listing: DirectoryListing) {
     this.#key = `miru.workspace.v1.${listing.rootId}`
+    this.#root = { listing, busy: false, error: '' }
     const saved = restore(this.#key)
+    const legacyDirectory = typeof saved?.directory === 'string' ? saved.directory : ''
     const views = Array.isArray(saved?.views)
-      ? saved.views.map(view => restoreView(view, listing.samples)).filter(view => view !== undefined)
+      ? saved.views.map(view => restoreView(view, this.#root, legacyDirectory)).filter(view => view !== undefined)
       : []
-    if (!saved && listing.samples) {
-      const media = filterMedia(listing)
-      const video = media.find(entry => entry.path === 'Aurora Over Lofoten.mp4')
-      const still = media.find(entry => entry.path === 'The Dolomites.jpg')
-      if (video) views.push({ ...newView(video, 0), controls: true })
-      if (still) views.push(newView(still, video ? 1 : 0))
-    }
-    const selected = saved ? saved.selected ?? null : views[0]?.id ?? null
-    const directory = typeof saved?.directory === 'string' ? saved.directory : ''
+    const selected = views.find(view => view.id === saved?.selected)?.id ?? null
     this.#state = {
-      directory: listing.samples ? restoreSamplePath(directory) : directory,
       camera: saved?.camera ? {
         x: finite(saved.camera.x, 0, -200, 200),
         y: finite(saved.camera.y, 0, -200, 200),
         zoom: finite(saved.camera.zoom, 1, 0.002, 1.5),
       } : defaultCamera,
-      views, selected, listing, busy: false, error: '', storageError: false,
+      views, selected, storageError: false,
     }
 
     // Use current revisions for items already available in the initial directory.
     this.#refreshMedia(listing)
-    for (const view of this.#state.views) this.#createRuntime(view)
+    for (const view of this.#state.views) {
+      this.#createRuntime(view)
+      if (!view.media && view.directory) void this.navigate(view.id, view.directory)
+    }
     window.addEventListener('pagehide', this.save)
-    if (this.#state.directory) void this.navigate(this.#state.directory, true)
-    else this.#scheduleSave()
+    this.#scheduleSave()
   }
 
   subscribe = (listener: () => void) => {
@@ -408,50 +407,72 @@ export class Workspace {
   snapshot = () => this.#state
 
   runtime(id: string) {
-    return this.#runtime.get(id)!
+    return this.#runtime.get(id)
   }
 
-  async navigate(directory: string, restoring = false) {
-    this.#navigation?.abort()
+  async navigate(id: string, directory: string) {
+    const view = this.#state.views.find(item => item.id === id)
+    if (!view || view.media) return
+    this.#cancelNavigation(id)
     const controller = new AbortController()
-    this.#navigation = controller
-    this.#publish({ busy: true, error: '' })
+    this.#navigation.set(id, controller)
+    this.patch(id, { browser: { ...view.browser, busy: true, error: '' } }, false)
     try {
       const listing = await fetchDirectory(directory, controller.signal)
       if (controller.signal.aborted) return
-      if (listing.rootId !== this.#state.listing.rootId) {
+      if (listing.rootId !== this.#root.listing.rootId) {
         location.reload()
         return
       }
       this.#refreshMedia(listing)
-      this.#publish({ listing, directory, busy: false }, true)
+      const browser = { listing, busy: false, error: '' }
+      if (!listing.path) this.#root = browser
+      this.patch(id, { directory: listing.path, browser })
     } catch (error) {
       if (controller.signal.aborted) return
       const message = error instanceof Error ? error.message : 'Could not load the folder.'
-      this.#publish({
-        busy: false, error: message,
-        directory: restoring ? this.#state.listing.path : this.#state.directory,
-      }, restoring)
+      this.patch(id, {
+        directory: view.browser.listing.path,
+        browser: { ...view.browser, busy: false, error: message },
+      })
+    } finally {
+      if (this.#navigation.get(id) === controller) this.#navigation.delete(id)
     }
   }
 
-  open(media: MediaEntry) {
-    const existing = this.#state.views.find(view => view.media.path === media.path)
-    if (existing) {
-      this.select(existing.id)
-      return
+  create(pose: WindowPose) {
+    const view: View = {
+      ...mediaDefaults, ...pose, id: crypto.randomUUID(), media: null, directory: '', browser: this.#root,
+      width: windowDefaults.width, height: windowDefaults.height,
     }
-    const view = newView(media, this.#state.views.length)
-    this.#createRuntime(view)
     this.#publish({ views: [...this.#state.views, view], selected: view.id }, true)
   }
 
+  open(id: string, media: MediaEntry) {
+    const view = this.#state.views.find(item => item.id === id)
+    if (!view || view.media) return
+    this.#cancelNavigation(id)
+    const patch = {
+      ...mediaDefaults, media, height: viewHeight(view), directory: view.browser.listing.path,
+      browser: { ...view.browser, busy: false, error: '' },
+    }
+    this.#createRuntime({ ...view, ...patch })
+    this.patch(id, patch)
+  }
+
+  back(id: string) {
+    const view = this.#state.views.find(item => item.id === id)
+    if (!view?.media) return
+    this.#disposeRuntime(id)
+    this.patch(id, { media: null, height: viewHeight(view), controls: false })
+    if (view.directory !== view.browser.listing.path) void this.navigate(id, view.directory)
+  }
+
   close(id: string) {
-    const runtime = this.#runtime.get(id)
-    if (!runtime) return
-    runtime.dispose()
-    this.#runtime.delete(id)
     const views = this.#state.views.filter(view => view.id !== id)
+    if (views.length === this.#state.views.length) return
+    this.#cancelNavigation(id)
+    this.#disposeRuntime(id)
     const selected = this.#state.selected === id ? views.at(-1)?.id ?? null : this.#state.selected
     this.#publish({ views, selected, camera: views.length ? this.#state.camera : defaultCamera }, true)
   }
@@ -460,12 +481,12 @@ export class Workspace {
     if (this.#state.selected !== id) this.#publish({ selected: id }, true)
   }
 
-  patch(id: string, patch: Partial<View>) {
+  patch(id: string, patch: Partial<View>, save = true) {
     const current = this.#state.views.find(view => view.id === id)
     if (!current) return
     const updated = { ...current, ...patch }
-    this.runtime(id).apply(updated)
-    this.#publish({ views: this.#state.views.map(view => view === current ? updated : view) }, true)
+    this.runtime(id)?.apply(updated)
+    this.#publish({ views: this.#state.views.map(view => view === current ? updated : view) }, save)
   }
 
   zoom(id: string, value: number) {
@@ -475,18 +496,18 @@ export class Workspace {
 
   depth(id: string, distance: number) {
     const view = this.#state.views.find(item => item.id === id)
-    if (view) this.patch(id, { z: clamp(view.z - distance, -limits.far, -limits.near) })
+    if (view) this.patch(id, { z: (view.z > 0 ? 1 : -1) * clamp(Math.abs(view.z) + distance, limits.near, limits.far) })
   }
 
   fit(width: number, height: number, base: number) {
     const views = this.#state.views
     if (!views.length || base <= 0) return
-    const left = Math.min(...views.map(view => (view.x - view.width / 2) / -view.z))
-    const right = Math.max(...views.map(view => (view.x + view.width / 2) / -view.z))
-    const top = Math.max(...views.map(view => (view.y + viewHeight(view) / 2) / -view.z))
-    const bottom = Math.min(...views.map(view => (view.y - viewHeight(view) / 2) / -view.z))
+    const left = Math.min(...views.map(view => (view.x - view.width / 2) / desktopDepth(view)))
+    const right = Math.max(...views.map(view => (view.x + view.width / 2) / desktopDepth(view)))
+    const top = Math.max(...views.map(view => (view.y + viewHeight(view) / 2) / desktopDepth(view)))
+    const bottom = Math.min(...views.map(view => (view.y - viewHeight(view) / 2) / desktopDepth(view)))
     const topInset = Math.min(42, height * 0.15)
-    const controlsInset = views.some(view => view.controls && view.media.kind === 'video') ? 123
+    const controlsInset = views.some(view => view.controls && view.media?.kind === 'video') ? 123
       : views.some(view => view.controls) ? 77 : 44
     const bottomInset = Math.min(controlsInset, height * 0.35)
     const zoom = clamp(Math.min(width * 0.84 / (right - left), (height - topInset - bottomInset) / (top - bottom)) / base, 0.002, 1.5)
@@ -497,9 +518,10 @@ export class Workspace {
   save = () => {
     window.clearTimeout(this.#saveTimer)
     this.#saveTimer = undefined
-    const { directory, views, selected, camera } = this.#state
+    const { views, selected, camera } = this.#state
+    const savedViews = views.map(({ browser, ...view }) => view)
     try {
-      localStorage.setItem(this.#key, JSON.stringify({ directory, views, selected, camera } satisfies Layout))
+      localStorage.setItem(this.#key, JSON.stringify({ views: savedViews, selected, camera } satisfies Layout))
       if (this.#state.storageError) this.#publish({ storageError: false })
     } catch {
       if (!this.#state.storageError) this.#publish({ storageError: true })
@@ -507,7 +529,17 @@ export class Workspace {
   }
 
   #createRuntime(view: View) {
-    this.#runtime.set(view.id, new MediaRuntime(view, patch => this.patch(view.id, patch)))
+    if (view.media) this.#runtime.set(view.id, new MediaRuntime(view, view.media, patch => this.patch(view.id, patch)))
+  }
+
+  #disposeRuntime(id: string) {
+    this.runtime(id)?.dispose()
+    this.#runtime.delete(id)
+  }
+
+  #cancelNavigation(id: string) {
+    this.#navigation.get(id)?.abort()
+    this.#navigation.delete(id)
   }
 
   #refreshMedia(listing: DirectoryListing) {
@@ -515,11 +547,12 @@ export class Workspace {
     this.#state = {
       ...this.#state,
       views: this.#state.views.map(view => {
+        if (!view.media) return view
         const revised = media.get(view.media.path)
         if (!revised || revised.version === view.media.version) return view
         const next = { ...view, media: revised }
         if (this.#runtime.has(view.id)) {
-          this.runtime(view.id).dispose()
+          this.#disposeRuntime(view.id)
           this.#createRuntime(next)
         }
         return next
