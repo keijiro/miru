@@ -151,10 +151,13 @@ const mediaDefaults = {
   paused: false, muted: true, loopStart: 0, loopEnd: null,
 }
 
-export function resizedDimensions(view: View, dx: number, dy: number, xSide: number, ySide: number) {
+export function resizedDimensions(
+  view: View, dx: number, dy: number, xSide: number, ySide: number,
+  minimum: Pick<typeof limits, 'minWidth' | 'minHeight'> = limits,
+) {
   const originalHeight = viewHeight(view)
-  const width = clamp(view.width + dx * xSide, limits.minWidth, limits.maxWidth)
-  const height = clamp(originalHeight + dy * ySide, limits.minHeight, limits.maxHeight)
+  const width = clamp(view.width + dx * xSide, minimum.minWidth, limits.maxWidth)
+  const height = clamp(originalHeight + dy * ySide, minimum.minHeight, limits.maxHeight)
   return {
     width,
     height: width === view.width && height === originalHeight ? view.height : height,

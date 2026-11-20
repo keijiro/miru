@@ -16,6 +16,32 @@ const mint = '#6ae9ce'
 const surface = '#141d2a'
 const line = '#354659'
 const controllerSmoothingTime = 0.035 // Seconds
+const uiPixelsPerMetre = 720 / windowDefaults.width
+const metres = (pixels: number) => pixels / uiPixelsPerMetre
+const frameBorder = 0.004
+const titleHeight = 48
+const contentZ = 0.003
+const resizeInset = metres(18)
+const resizeOutset = 0.01
+
+const browserMargin = 30
+const cardWidth = 323
+const cardHeight = 119
+const columnGap = 14
+const rowGap = 10
+const gridTop = 105
+const compactHeaderExtra = 48
+const browserFooter = 74
+const browserMinimum = {
+  minWidth: metres(cardWidth + 2 * browserMargin),
+  minHeight: metres(gridTop + compactHeaderExtra + cardHeight + browserFooter),
+}
+
+const seekX = 25
+const seekY = 22
+const zoomX = 100
+const zoomRight = 86
+const zoomBottom = 24
 
 type Face = Mesh<PlaneGeometry, MeshBasicMaterial>
 type Hit = Intersection<Face>
@@ -29,6 +55,13 @@ interface Target {
   press(hit: Hit, ray: Ray): Grab | void
 }
 type Action = () => void
+interface ButtonArea {
+  x: number
+  y: number
+  w: number
+  h: number
+  run: Action
+}
 
 function face(group: Group, color: string | number, geometry = new PlaneGeometry()) {
   const mesh = new Mesh(geometry, new MeshBasicMaterial({ color, toneMapped: false }))
@@ -42,29 +75,64 @@ function place(mesh: Face, width: number, height: number, y: number, z: number) 
 }
 
 class Panel {
-  readonly canvas = document.createElement('canvas')
-  readonly context: CanvasRenderingContext2D
-  readonly texture: CanvasTexture
+  #canvas = document.createElement('canvas')
+  #context = this.#canvas.getContext('2d')!
+  #texture?: CanvasTexture
+  #buttons: ButtonArea[] = []
   readonly mesh: Face
+  width = 0
+  height = 0
 
-  constructor(group: Group, width: number, height: number) {
-    this.canvas.width = width
-    this.canvas.height = height
-    this.context = this.canvas.getContext('2d')!
-    this.texture = new CanvasTexture(this.canvas)
-    this.texture.colorSpace = SRGBColorSpace
+  constructor(group: Group) {
     this.mesh = face(group, 0xffffff)
-    this.mesh.material.map = this.texture
+  }
+
+  layout(width: number, height: number, y: number, z: number) {
+    this.width = Math.round(width * uiPixelsPerMetre)
+    this.height = Math.round(height * uiPixelsPerMetre)
+    place(this.mesh, width, height, y, z)
   }
 
   paint(draw: (ctx: CanvasRenderingContext2D) => void) {
-    this.context.fillStyle = surface
-    this.context.fillRect(0, 0, this.canvas.width, this.canvas.height)
-    draw(this.context)
-    this.texture.needsUpdate = true
+    // Keep logical UI sizes independent of the raster resolution. Allocating in steps
+    // avoids replacing the GPU texture for every pixel of a resize.
+    const resolution = (size: number) => Math.min(2048, Math.ceil(size / 64) * 64)
+    const width = resolution(this.width)
+    const height = resolution(this.height)
+    if (!this.#texture || width !== this.#canvas.width || height !== this.#canvas.height) {
+      this.#texture?.dispose()
+      this.#canvas.width = width
+      this.#canvas.height = height
+      this.#texture = new CanvasTexture(this.#canvas)
+      this.#texture.colorSpace = SRGBColorSpace
+      this.mesh.material.map = this.#texture
+      this.mesh.material.needsUpdate = true
+    }
+    const ctx = this.#context
+    ctx.setTransform(width / this.width, 0, 0, height / this.height, 0, 0)
+    ctx.fillStyle = surface
+    ctx.fillRect(0, 0, this.width, this.height)
+    this.#buttons = []
+    draw(ctx)
+    this.#texture.needsUpdate = true
   }
 
-  dispose() { this.texture.dispose() }
+  button(label: string, x: number, y: number, w: number, h: number, run: Action, active = false) {
+    chip(this.#context, label, x, y, w, h, active)
+    this.action(x, y, w, h, run)
+  }
+
+  action(x: number, y: number, w: number, h: number, run: Action) {
+    this.#buttons.push({ x, y, w, h, run })
+  }
+
+  press(x: number, y: number) {
+    const button = this.#buttons.find(({ x: left, y: top, w, h }) => x >= left && x <= left + w && y >= top && y <= top + h)
+    button?.run()
+    return Boolean(button)
+  }
+
+  dispose() { this.#texture?.dispose() }
 }
 
 function rect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string, radius = 0) {
@@ -126,7 +194,7 @@ function visibleMedia(mesh: Face, view: View) {
   const x = crop(fitWidth, view.panX)
   const y = crop(fitHeight, view.panY)
   mesh.scale.set((x.upper - x.lower) * view.width, (y.upper - y.lower) * height, 1)
-  mesh.position.set((x.lower + x.upper - 1) * view.width / 2, (y.lower + y.upper - 1) * height / 2, 0.003)
+  mesh.position.set((x.lower + x.upper - 1) * view.width / 2, (y.lower + y.upper - 1) * height / 2, contentZ)
   const uv = mesh.geometry.getAttribute('uv')
   uv.setXY(0, x.uv0, y.uv1)
   uv.setXY(1, x.uv1, y.uv1)
@@ -167,9 +235,9 @@ class XRWindow {
   #screen = face(this.group, '#090e15')
   #media = face(this.group, 0xffffff)
   #hitbox = face(this.group, 0xffffff)
-  #title = new Panel(this.group, 660, 48)
-  #controls = new Panel(this.group, 660, 140)
-  #message = new Panel(this.group, 480, 65)
+  #title = new Panel(this.group)
+  #controls = new Panel(this.group)
+  #message = new Panel(this.group)
   #browser?: XRBrowser
   #runtime?: MediaRuntime
   #texture?: Texture
@@ -186,8 +254,7 @@ class XRWindow {
     this.#frame.material.side = DoubleSide
     this.#hitbox.material.side = DoubleSide
     this.targets = [
-      { mesh: this.#hitbox, panel: this, press: hit => this.#body(hit) },
-      { mesh: this.#title.mesh, panel: this, press: hit => this.#header(hit) },
+      { mesh: this.#hitbox, panel: this, press: (hit, ray) => this.#body(hit, ray) },
       { mesh: this.#controls.mesh, panel: this, press: (hit, ray) => this.#control(hit, ray) },
     ]
     this.#layout()
@@ -195,6 +262,15 @@ class XRWindow {
   }
 
   get runtime() { return this.#runtime }
+
+  get #size() {
+    const { width, media } = this.#view
+    const height = viewHeight(this.#view)
+    return media ? { width, height } : {
+      width: Math.max(width, browserMinimum.minWidth),
+      height: Math.max(height, browserMinimum.minHeight),
+    }
+  }
 
   sync(view: View, selected: boolean, runtime: MediaRuntime | undefined) {
     const runtimeChanged = runtime !== this.#runtime
@@ -208,12 +284,13 @@ class XRWindow {
       this.#media.material.map = null
       this.#lastControls = ''
     }
+    const previousTitleWidth = this.#title.width
     if (view !== this.#view || runtimeChanged || createBrowser) {
       this.#view = view
       this.#layout()
     }
     this.#selected = selected
-    if (repaint) this.#paintFrame()
+    if (repaint || this.#title.width !== previousTitleWidth) this.#paintFrame()
 
     if (this.#browser) this.#browser.mesh.visible = !runtime
     if (!runtime) {
@@ -234,11 +311,13 @@ class XRWindow {
     this.#media.visible = Boolean(this.#texture) && !media.error
     this.#message.mesh.visible = !this.#media.visible
     const message = media.error ? 'Could not display the file' : 'Loading…'
-    if (this.#message.mesh.visible && message !== this.#lastMessage) {
-      this.#lastMessage = message
+    const messageWidth = this.#message.width
+    const messageSignature = `${messageWidth}:${message}`
+    if (this.#message.mesh.visible && messageSignature !== this.#lastMessage) {
+      this.#lastMessage = messageSignature
       this.#message.paint(ctx => {
         ctx.textAlign = 'center'
-        text(ctx, message, 240, 33, 23, muted)
+        text(ctx, message, messageWidth / 2, 33, 23, muted, 500, messageWidth - 16)
         ctx.textAlign = 'left'
       })
     }
@@ -287,32 +366,33 @@ class XRWindow {
 
   #layout() {
     const view = this.#view
-    const height = viewHeight(view)
-    const border = clamp(view.width * 0.005, 0.004, 0.014)
-    const title = view.width * 48 / 660
-    const controls = view.width * (this.#runtime?.video ? 140 : 47) / 660
+    const { width, height } = this.#size
+    const title = metres(titleHeight)
+    const controls = metres(this.#runtime?.video ? (width < metres(570) ? 186 : 140) : 48)
     this.group.position.set(view.x, view.y, view.z)
     this.group.quaternion.fromArray(view.orientation)
-    place(this.#frame, view.width + border * 2, height + title + border * 2, title / 2, -0.01)
-    place(this.#screen, view.width, height, 0, 0)
+    place(this.#frame, width + frameBorder * 2, height + title + frameBorder * 2, title / 2, -0.01)
+    place(this.#screen, width, height, 0, 0)
     if (view.media) visibleMedia(this.#media, view)
-    if (this.#browser) place(this.#browser.mesh, view.width, height, 0, 0.003)
-    place(this.#hitbox, view.width + border * 5, height + border * 5, 0, 0.011)
-    place(this.#title.mesh, view.width + border * 2, title, (height + title) / 2, 0.015)
-    place(this.#message.mesh, view.width * 0.63, view.width * 0.086, 0, 0.009)
-    place(this.#controls.mesh, view.width, controls, -(height + controls) / 2 - border, 0.017)
+    this.#browser?.layout(width, height)
+    place(this.#hitbox, width + resizeOutset * 2, height + title + resizeOutset * 2, title / 2, contentZ)
+    this.#title.layout(width + frameBorder * 2, title, (height + title) / 2, contentZ)
+    this.#message.layout(Math.min(width - frameBorder * 2, metres(450)), metres(65), 0, 0.009)
+    this.#controls.layout(width, controls, -(height + controls) / 2 - frameBorder, 0.017)
     this.#controls.mesh.visible = Boolean(this.#runtime) && view.controls
   }
 
   #paintFrame() {
     this.#frame.material.color.set(this.#selected ? mint : line)
-    this.#title.paint(ctx => {
-      rect(ctx, 0, 0, 660, 2, this.#selected ? mint : line)
-      const { media } = this.#view
-      if (media) chip(ctx, '← Back', 12, 7, 90, 35)
-      const titleX = media ? 117 : 16
-      text(ctx, media?.name ?? 'File browser', titleX, 25, 23, ink, 625, 600 - titleX)
-      chip(ctx, '×', 613, 7, 40, 35)
+    const panel = this.#title
+    const { id, media } = this.#view
+    panel.paint(ctx => {
+      rect(ctx, 0, 0, panel.width, 2, this.#selected ? mint : line)
+      if (media) panel.button('← Back', 26, 11, 90, 32, () => this.workspace.back(id))
+      const titleX = media ? 130 : 26
+      const closeX = panel.width - 66
+      text(ctx, media?.name ?? 'File browser', titleX, 27, 23, ink, 625, closeX - titleX - 12)
+      panel.button('×', closeX, 11, 40, 32, () => this.workspace.close(id))
     })
   }
 
@@ -321,43 +401,61 @@ class XRWindow {
     const runtime = this.#runtime
     if (!runtime) return
     const media = runtime.snapshot()
+    const panel = this.#controls
+    const { width, height } = panel
     const signature = JSON.stringify([
-      view.zoom, view.loopStart, view.loopEnd, view.muted, media.duration, Math.floor(media.time * 10), media.playing,
+      width, height, view.zoom, view.loopStart, view.loopEnd, view.muted, media.duration, Math.floor(media.time * 10), media.playing,
     ])
     if (signature === this.#lastControls) return
     this.#lastControls = signature
-    this.#controls.paint(ctx => {
-      const hasVideo = Boolean(runtime.video)
-      const zoomY = hasVideo ? 115 : 70
-      rect(ctx, 0, 0, 660, 2, line)
-      if (hasVideo) {
+    panel.paint(ctx => {
+      rect(ctx, 0, 0, width, 2, line)
+      if (runtime.video) {
+        const seekWidth = width - 2 * seekX
         const fraction = (t: number) => media.duration ? t / media.duration : 0
-        slider(ctx, 25, 22, 610, fraction(media.time))
-        if (view.loopStart) rect(ctx, 25 + 610 * fraction(view.loopStart), 14, 3, 16, '#f3c387')
-        if (view.loopEnd !== null) rect(ctx, 25 + 610 * fraction(view.loopEnd), 14, 3, 16, '#f3c387')
-        chip(ctx, media.playing ? 'Ⅱ' : '▶', 19, 40, 64, 43)
-        text(ctx, `${formatTime(media.time)} / ${formatTime(media.duration)}`, 98, 62, 21, muted, 550, 201)
-        chip(ctx, '[ A', 321, 40, 77, 43, view.loopStart > 0)
-        chip(ctx, 'B ]', 413, 40, 77, 43, view.loopEnd !== null)
-        chip(ctx, view.muted ? 'Unmute' : 'Mute', 505, 40, 130, 43, !view.muted)
-        rect(ctx, 20, 92, 620, 2, line)
+        slider(ctx, seekX, seekY, seekWidth, fraction(media.time))
+        if (view.loopStart) rect(ctx, seekX + seekWidth * fraction(view.loopStart), seekY - 8, 3, 16, '#f3c387')
+        if (view.loopEnd !== null) rect(ctx, seekX + seekWidth * fraction(view.loopEnd), seekY - 8, 3, 16, '#f3c387')
+        const compact = height > 140
+        const gap = compact ? 6 : 15
+        const muteX = width - (compact ? 6 : 25) - 130
+        const endX = muteX - gap - 77
+        const startX = endX - gap - 77
+        const loopY = compact ? 91 : 40
+        panel.button(media.playing ? 'Ⅱ' : '▶', 19, 40, 64, 43, () => runtime.togglePlayback())
+        text(ctx, `${formatTime(media.time)} / ${formatTime(media.duration)}`, 98, 62, 21, muted, 550,
+          (compact ? width - 16 : startX - 12) - 98)
+        panel.button('[ A', startX, loopY, 77, 43, () => runtime.mark('start'), view.loopStart > 0)
+        panel.button('B ]', endX, loopY, 77, 43, () => runtime.mark('end'), view.loopEnd !== null)
+        panel.button(view.muted ? 'Unmute' : 'Mute', muteX, loopY, 130, 43,
+          () => this.workspace.patch(view.id, { muted: !view.muted }), !view.muted)
+        rect(ctx, 20, height - 48, width - 40, 2, line)
       }
-      text(ctx, 'Zoom', 25, zoomY, hasVideo ? 22 : 34, muted, 630)
-      slider(ctx, 152, zoomY, 382, (view.zoom - 1) / (limits.maxZoom - 1))
-      text(ctx, `${Math.round(view.zoom * 100)}%`, 560, zoomY, hasVideo ? 23 : 35)
+      const zoomY = height - zoomBottom
+      text(ctx, 'Zoom', 25, zoomY, 22, muted, 630)
+      slider(ctx, zoomX, zoomY, width - zoomX - zoomRight, (view.zoom - 1) / (limits.maxZoom - 1))
+      text(ctx, `${Math.round(view.zoom * 100)}%`, width - 69, zoomY, 23)
     })
   }
 
   #focus() { this.workspace.select(this.#view.id) }
 
   #resize(hit: Hit, x: number, y: number) {
-    const view = this.#view
+    const browser = !this.#view.media ? this.#browser : undefined
+    const view = browser ? { ...this.#view, ...this.#size } : this.#view
     const orientation = this.group.quaternion.clone()
     const height = viewHeight(view)
     const offset = new Vector3()
+    let lastWidth = view.width
+    let lastHeight = height
+    browser?.startResize()
     return xyDrag(view, hit.point, orientation, (dx, dy) => {
-      const size = resizedDimensions(view, dx, dy, x, y)
-      offset.set(x * (size.width - view.width) / 2, y * ((size.height ?? height) - height) / 2, 0)
+      const size = resizedDimensions(view, dx, dy, x, y, browser ? browserMinimum : limits)
+      const nextHeight = size.height ?? height
+      if (size.width === lastWidth && nextHeight === lastHeight) return
+      lastWidth = size.width
+      lastHeight = nextHeight
+      offset.set(x * (size.width - view.width) / 2, y * (nextHeight - height) / 2, 0)
         .applyQuaternion(orientation)
       this.workspace.patch(view.id, {
         ...size,
@@ -368,17 +466,26 @@ class XRWindow {
     })
   }
 
-  #body(hit: Hit) {
+  #body(hit: Hit, ray: Ray) {
     const view = this.#view
     this.#focus()
     const local = this.group.worldToLocal(hit.point.clone())
-    const x = local.x / view.width
-    const y = local.y / viewHeight(view)
-    const edgeX = Math.abs(x) > 0.463 ? Math.sign(x) : 0
-    const edgeY = Math.abs(y) > 0.449 ? Math.sign(y) : 0
+    const { width, height } = this.#size
+    const edgeX = Math.abs(local.x) > width / 2 - resizeInset ? Math.sign(local.x) : 0
+    const edgeY = local.y >= height / 2 + metres(titleHeight - 10) ? 1
+      : local.y <= -height / 2 + resizeInset ? -1 : 0
     if (edgeX || edgeY) return this.#resize(hit, edgeX, edgeY)
+    if (local.y >= height / 2) {
+      const normal = new Vector3(0, 0, 1).applyQuaternion(this.group.quaternion)
+      const panel = this.#title
+      if (ray.direction.dot(normal) < 0) {
+        panel.press((local.x / panel.mesh.scale.x + 0.5) * panel.width,
+          (height / 2 + panel.mesh.scale.y - local.y) / panel.mesh.scale.y * panel.height)
+      }
+      return
+    }
     if (!view.media) {
-      this.#browser?.press(x + 0.5, 0.5 - y)
+      this.#browser?.press(local.x / width + 0.5, 0.5 - local.y / height)
       return
     }
 
@@ -389,72 +496,37 @@ class XRWindow {
     })
   }
 
-  #header(hit: Hit) {
-    this.#focus()
-    const uv = hit.uv!
-    const px = uv.x * 660
-    const py = (1 - uv.y) * 48
-    const onButton = py >= 7 && py <= 42
-    if (onButton && px >= 613 && px <= 653) {
-      this.workspace.close(this.#view.id)
-      return
-    }
-    if (this.#view.media && onButton && px >= 12 && px <= 102) {
-      this.workspace.back(this.#view.id)
-      return
-    }
-    const x = uv.x < 0.04 ? -1 : uv.x > 0.96 ? 1 : 0
-    const y = uv.y > 0.72 ? 1 : 0
-    if (x || y) return this.#resize(hit, x, y)
-  }
-
   #control(hit: Hit, ray: Ray) {
     const runtime = this.#runtime
     if (!runtime) return
     this.#focus()
-    const x = hit.uv!.x * 660
-    const y = (1 - hit.uv!.y) * 140
+    const panel = this.#controls
+    const { width, height } = panel
+    const x = hit.uv!.x * width
+    const y = (1 - hit.uv!.y) * height
+    if (panel.press(x, y)) return
     const media = runtime.snapshot()
-    if (runtime.video && y >= 38 && y <= 87) {
-      if (x >= 19 && x <= 83) runtime.togglePlayback()
-      else if (x >= 321 && x <= 398) runtime.mark('start')
-      else if (x >= 413 && x <= 490) runtime.mark('end')
-      else if (x >= 505 && x <= 635) this.workspace.patch(this.#view.id, { muted: !this.#view.muted })
-      return
-    }
-    const seeking = runtime.video && y < 36 && media.duration > 0
-    const zooming = (!runtime.video || y > 93) && x >= 134 && x <= 552
+    const seeking = runtime.video && Math.abs(y - seekY) <= 15 && media.duration > 0
+      && x >= seekX - 15 && x <= width - seekX + 15
+    const zooming = Math.abs(y - (height - zoomBottom)) <= 15 && x >= zoomX - 15 && x <= width - zoomRight + 15
     if (!seeking && !zooming) return
-    const panel = this.#controls.mesh
     const plane = panelPlane(hit.point, this.group.quaternion)
     const point = new Vector3()
     const update = (current: Ray) => {
       if (!current.intersectPlane(plane, point)) return
-      const pos = (panel.worldToLocal(point).x + 0.5) * 660
-      if (seeking) runtime.seek(clamp((pos - 25) / 610, 0, 1) * media.duration)
-      else this.workspace.zoom(this.#view.id, 1 + clamp((pos - 152) / 382, 0, 1) * (limits.maxZoom - 1))
+      const pos = (panel.mesh.worldToLocal(point).x + 0.5) * width
+      if (seeking) runtime.seek(clamp((pos - seekX) / (width - 2 * seekX), 0, 1) * media.duration)
+      else this.workspace.zoom(this.#view.id, 1 + clamp((pos - zoomX) / (width - zoomX - zoomRight), 0, 1) * (limits.maxZoom - 1))
     }
     update(ray)
     return { update }
   }
 }
 
-interface ButtonArea {
-  x: number
-  y: number
-  w: number
-  h: number
-  run: Action
-}
-
-const pageSize = 6
-const browserWidth = 720
-const browserHeight = 566
-
 class XRBrowser {
   #panel: Panel
-  #page = 0
-  #buttons: ButtonArea[] = []
+  #pageAnchor = 0
+  #pageSize = 1
   #listing?: DirectoryListing
   #signature = ''
   #dirty = true
@@ -462,55 +534,76 @@ class XRBrowser {
   #destroyed = false
 
   constructor(group: Group, private readonly workspace: Workspace, private readonly id: string, private readonly end: Action) {
-    this.#panel = new Panel(group, browserWidth, browserHeight)
+    this.#panel = new Panel(group)
   }
 
   get mesh() { return this.#panel.mesh }
 
+  layout(width: number, height: number) { this.#panel.layout(width, height, 0, contentZ) }
+
+  // Use the first item of the current page throughout the drag, even if the grid reflows several times.
+  startResize() { this.#pageAnchor -= this.#pageAnchor % this.#pageSize }
+
   press(u: number, v: number) {
-    const x = u * browserWidth
-    const y = v * browserHeight
-    this.#buttons.find(button => x >= button.x && x <= button.x + button.w && y >= button.y && y <= button.y + button.h)?.run()
+    this.#panel.press(u * this.#panel.width, v * this.#panel.height)
   }
 
   sync({ listing, busy, error }: View['browser']) {
     if (this.#listing !== listing) {
-      if (this.#listing?.path !== listing.path) this.#page = 0
+      if (this.#listing?.path !== listing.path) this.#pageAnchor = 0
       this.#listing = listing
       this.#images.clear()
       this.#dirty = true
     }
+    const panel = this.#panel
+    const { width, height } = panel
+    const compact = width < 530
+    const headerExtra = compact ? compactHeaderExtra : 0
+    const firstRowY = gridTop + headerExtra
+    const innerWidth = width - 2 * browserMargin
+    const columns = Math.floor((innerWidth + columnGap) / (cardWidth + columnGap))
+    const rows = Math.floor((height - firstRowY - browserFooter + rowGap) / (cardHeight + rowGap))
+    const pageSize = columns * rows
+    this.#pageSize = pageSize
+    this.#pageAnchor = Math.min(this.#pageAnchor, Math.max(0, listing.entries.length - 1))
+    const page = Math.floor(this.#pageAnchor / pageSize)
     const pageCount = Math.max(1, Math.ceil(listing.entries.length / pageSize))
-    this.#page = clamp(this.#page, 0, pageCount - 1)
-    const signature = JSON.stringify([busy, error, this.#page])
+    const signature = JSON.stringify([width, height, busy, error, page])
     if (!this.#dirty && signature === this.#signature) return
     this.#signature = signature
     this.#dirty = false
-    this.#buttons = []
-    this.#panel.paint(ctx => {
+    panel.paint(ctx => {
       const parent = listing.path.split('/').slice(0, -1).join('/')
       if (listing.path) {
-        this.#button(ctx, 'Root', 30, 14, 66, 38, () => void this.workspace.navigate(this.id, ''))
-        this.#button(ctx, 'Up', 105, 14, 55, 38, () => void this.workspace.navigate(this.id, parent))
+        panel.button('Root', browserMargin, 14, 66, 38, () => void this.workspace.navigate(this.id, ''))
+        panel.button('Up', 105, 14, 55, 38, () => void this.workspace.navigate(this.id, parent))
       }
       const path = listing.path ? `${listing.rootName} / ${listing.path}` : listing.rootName
-      const pathX = listing.path ? 176 : 30
-      text(ctx, path, pathX, 33, 22, muted, 560, 483 - pathX)
-      this.#button(ctx, 'Refresh', 493, 14, 98, 38, () => void this.workspace.navigate(this.id, listing.path))
-      this.#button(ctx, 'Exit VR', 600, 14, 90, 38, this.end)
-      rect(ctx, 30, 63, 660, 2, line)
-      if (error || busy) text(ctx, error || 'Loading…', 30, 86, 20, error ? '#f3c387' : muted, 520, 660)
-      if (!listing.entries.length && !busy && !error) {
-        text(ctx, 'No media in this folder.', 30, 122, 23, muted, 520, 660)
+      const pathX = listing.path ? 176 : browserMargin
+      const right = width - browserMargin
+      const refreshX = right - 197
+      const pathRight = compact ? right : refreshX - 10
+      text(ctx, path, pathX, 33, 22, muted, 560, pathRight - pathX)
+      panel.button('Refresh', refreshX, 14 + headerExtra, 98, 38, () => void this.workspace.navigate(this.id, listing.path))
+      panel.button('Exit VR', right - 90, 14 + headerExtra, 90, 38, this.end)
+      rect(ctx, browserMargin, 63 + headerExtra, innerWidth, 2, line)
+      if (error || busy) {
+        text(ctx, error || 'Loading…', browserMargin, 86 + headerExtra, 20, error ? '#f3c387' : muted, 520, innerWidth)
       }
-      listing.entries.slice(this.#page * pageSize, (this.#page + 1) * pageSize).forEach((item, i) => {
-        this.#card(ctx, item, i)
+      if (!listing.entries.length && !busy && !error) {
+        text(ctx, 'No media in this folder.', browserMargin, firstRowY + 17, 23, muted, 520, innerWidth)
+      }
+      listing.entries.slice(page * pageSize, (page + 1) * pageSize).forEach((item, i) => {
+        const x = browserMargin + i % columns * (cardWidth + columnGap)
+        const y = firstRowY + Math.floor(i / columns) * (cardHeight + rowGap)
+        this.#card(ctx, item, x, y)
       })
-      if (this.#page > 0) this.#button(ctx, 'Previous', 30, 501, 112, 36, () => this.#page--)
-      if (this.#page + 1 < pageCount) this.#button(ctx, 'Next', 578, 501, 112, 36, () => this.#page++)
+      const footerY = height - 65
+      if (page > 0) panel.button('Previous', browserMargin, footerY, 112, 36, () => { this.#pageAnchor = (page - 1) * pageSize })
+      if (page + 1 < pageCount) panel.button('Next', right - 112, footerY, 112, 36, () => { this.#pageAnchor = (page + 1) * pageSize })
       if (pageCount > 1) {
         ctx.textAlign = 'center'
-        text(ctx, `${this.#page + 1} / ${pageCount}`, 360, 520, 20, muted)
+        text(ctx, `${page + 1} / ${pageCount}`, width / 2, footerY + 19, 20, muted, 500, innerWidth - 240)
         ctx.textAlign = 'left'
       }
     })
@@ -522,18 +615,16 @@ class XRBrowser {
     this.#panel.dispose()
   }
 
-  #card(ctx: CanvasRenderingContext2D, item: LibraryEntry, index: number) {
-    const x = index % 2 === 0 ? 30 : 367
-    const y = 105 + Math.floor(index / 2) * 129
-    const w = 323
-    const h = 119
+  #card(ctx: CanvasRenderingContext2D, item: LibraryEntry, x: number, y: number) {
+    const w = cardWidth
+    const h = cardHeight
     rect(ctx, x, y, w, h, line, 8)
     rect(ctx, x + 2, y + 2, w - 4, h - 4, '#1c2939', 7)
     if (item.kind === 'folder') {
       rect(ctx, x + 24, y + 21, 41, 16, '#648d9e', 5)
       rect(ctx, x + 24, y + 31, 67, 42, '#9dbcc7', 5)
       text(ctx, item.name, x + 17, y + 97, 23, ink, 650, w - 32)
-      this.#buttons.push({ x, y, w, h, run: () => void this.workspace.navigate(this.id, item.path) })
+      this.#panel.action(x, y, w, h, () => void this.workspace.navigate(this.id, item.path))
       return
     }
     let image = this.#images.get(item.path)
@@ -554,12 +645,7 @@ class XRBrowser {
     }
     if (item.kind === 'video') chip(ctx, '▶', x + w - 54, y + 43, 36, 30)
     text(ctx, item.name, x + 12, y + 99, 22, ink, 550, w - 24)
-    this.#buttons.push({ x, y, w, h, run: () => this.workspace.open(this.id, item) })
-  }
-
-  #button(ctx: CanvasRenderingContext2D, label: string, x: number, y: number, w: number, h: number, run: Action) {
-    chip(ctx, label, x, y, w, h)
-    this.#buttons.push({ x, y, w, h, run })
+    this.#panel.action(x, y, w, h, () => this.workspace.open(this.id, item))
   }
 }
 
