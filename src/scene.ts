@@ -1,13 +1,15 @@
 import {
   BufferAttribute, BufferGeometry, Color, Fog, GridHelper, Line, LineBasicMaterial,
-  Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
-  SphereGeometry, Vector2, Vector3, WebGLRenderer, type XRTargetRaySpace,
+  Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
+  SphereGeometry, Vector2, Vector3, WebGLRenderer, type Ray, type XRTargetRaySpace,
 } from 'three'
 import { mint, SceneWindow, windowTitleHeight, type Face, type Grab, type Hit, type Target } from './scene-window'
-import { clamp, windowDefaults, type Workspace } from './workspace'
+import { clamp, limits, windowDefaults, type Workspace } from './workspace'
 
 const controllerSmoothingTime = 0.035 // Seconds
-const stageBase = (width: number, height: number) => Math.min(width * 0.96, height * 1.6)
+const cameraFov = 55
+const fogStart = 7
+const fogFalloff = 18
 
 interface ActiveGrab {
   panel: SceneWindow
@@ -25,9 +27,11 @@ interface Pointer {
 export class WorkspaceScene {
   #renderer: WebGLRenderer
   #scene = new Scene()
-  #xrCamera = new PerspectiveCamera(55, 1, 0.04, 80)
-  #desktopCamera = new PerspectiveCamera(55, 1, 0.04, 80)
-  #viewerPosition = new Vector3()
+  #fog = new Fog('#0c1420', fogStart, fogStart + fogFalloff)
+  #xrCamera = new PerspectiveCamera(cameraFov, 1, 0.04, 80)
+  #desktopCamera = this.#xrCamera.clone()
+  #headPosition = new Vector3()
+  #needsDesktopFit = true
   #floor = new GridHelper(70, 70, '#396068', '#263746')
   #windows = new Map<string, SceneWindow>()
   #pointers: Pointer[]
@@ -57,7 +61,7 @@ export class WorkspaceScene {
     this.#resize.observe(container)
 
     this.#scene.background = new Color('#0c1420')
-    this.#scene.fog = new Fog('#0c1420', 7, 25)
+    this.#scene.fog = this.#fog
     this.#floor.position.y = -1.58
     this.#scene.add(this.#floor)
     this.#pointers = [0, 1].map(index => this.#createPointer(index))
@@ -74,25 +78,34 @@ export class WorkspaceScene {
   async start(session: XRSession) {
     this.#finishMouse(false)
     this.#previousFrame = 0
-    this.#viewerPosition.set(0, 0, 0)
+    this.#headPosition.set(0, 0, 0)
+    this.#needsDesktopFit = true
     await this.#renderer.xr.setSession(session)
   }
 
   fit() {
     if (this.#renderer.xr.getSession()) return
+    this.#updateDesktopCamera()
     this.#sync(false)
+    this.#fitDesktopWindows()
+  }
+
+  #fitDesktopWindows() {
     if (!this.#windows.size) return
-    const { x: width, y: height } = this.#size
-    const bounds = [...this.#windows.values()].map(panel => panel.desktopBounds)
-    const left = Math.min(...bounds.map(box => box.left))
-    const right = Math.max(...bounds.map(box => box.right))
-    const bottom = Math.min(...bounds.map(box => box.bottom))
-    const top = Math.max(...bounds.map(box => box.top))
-    const scale = 0.84 * Math.min(width / (right - left), height / (top - bottom))
-    this.workspace.setCamera({
-      x: (left + right) / 2, y: (bottom + top) / 2,
-      zoom: clamp(scale / stageBase(width, height), 0.002, 1.5),
+    const bounds = Array.from(this.#windows.values(), panel => {
+      const { x, y, z } = panel.group.position
+      return { x, y, z, radius: panel.radius }
     })
+    const x = (Math.min(...bounds.map(b => b.x - b.radius)) + Math.max(...bounds.map(b => b.x + b.radius))) / 2
+    const y = (Math.min(...bounds.map(b => b.y - b.radius)) + Math.max(...bounds.map(b => b.y + b.radius))) / 2
+    const { x: slopeX, y: slopeY } = this.#desktopCamera.getViewSize(1, new Vector2()).multiplyScalar(0.42)
+    // Fit each window's bounding sphere inside the padded frustum even as it turns to face the camera.
+    const z = Math.max(windowDefaults.depth - limits.far, ...bounds.map(b => b.z + Math.max(
+      (Math.abs(b.x - x) + b.radius * Math.hypot(1, slopeX)) / slopeX,
+      (Math.abs(b.y - y) + b.radius * Math.hypot(1, slopeY)) / slopeY,
+      b.radius + this.#desktopCamera.near,
+    )))
+    this.workspace.setCamera({ x, y, z })
   }
 
   dispose() {
@@ -118,19 +131,61 @@ export class WorkspaceScene {
     const pixelRatio = Math.min(window.devicePixelRatio, 2)
     if (pixelRatio !== this.#renderer.getPixelRatio()) this.#renderer.setPixelRatio(pixelRatio)
     if (!this.#renderer.getSize(this.#rendererSize).equals(this.#size)) this.#renderer.setSize(width, height, false)
-    const { x, y, zoom } = this.workspace.snapshot().camera
+    const position = this.workspace.snapshot().camera
     const camera = this.#desktopCamera
-    const scale = stageBase(width, height) * zoom
-    // Saved desktop camera offsets are expressed on the projection plane at z = -1.
-    camera.zoom = 2 * Math.tan(camera.fov * Math.PI / 360) * scale / height
-    camera.setViewOffset(width, height, x * scale, -y * scale, width, height)
+    if (position) camera.position.set(position.x, position.y, position.z)
+    camera.aspect = width / height
+    // Widen the view on narrow screens so a new window fits across the canvas.
+    camera.zoom = Math.min(1, camera.aspect * 1.92 * Math.tan(camera.fov * Math.PI / 360))
+    camera.far = Math.max(80, camera.position.z + limits.far + limits.maxHeight)
+    camera.updateProjectionMatrix()
+    camera.updateMatrixWorld()
   }
 
   #mouseRay(event: MouseEvent) {
     const { left, top, width, height } = this.#renderer.domElement.getBoundingClientRect()
     const ndc = new Vector2(2 * (event.clientX - left) / width - 1, 1 - 2 * (event.clientY - top) / height)
     this.#raycaster.setFromCamera(ndc, this.#desktopCamera)
-    return this.#raycaster.ray
+    const { ray } = this.#raycaster
+    this.#raycaster.near = this.#desktopCamera.near / -ray.direction.z
+    this.#raycaster.far = this.#desktopCamera.far / -ray.direction.z
+    return ray
+  }
+
+  #createDesktopWindow(ray: Ray) {
+    const { width, height } = windowDefaults
+    const camera = this.#desktopCamera
+    const eye = camera.position
+    const z = Math.min(eye.z - windowDefaults.depth, limits.far)
+    const center = new Vector3(eye.x, eye.y, z)
+    const position = ray.at((z - eye.z) / ray.direction.z, new Vector3())
+    position.set(clamp(position.x, -100, 100), clamp(position.y, -100, 100), z)
+
+    const rotation = new Matrix4()
+    const corner = new Vector3()
+    const fits = (point: Vector3) => {
+      rotation.lookAt(eye, point, camera.up)
+      for (const x of [-width / 2, width / 2]) {
+        for (const y of [-height / 2, height / 2 + windowTitleHeight]) {
+          corner.set(x, y, 0).applyMatrix4(rotation).add(point).project(camera)
+          if (Math.abs(corner.x) > 0.98 || Math.abs(corner.y) > 0.98 || corner.z >= 1) return false
+        }
+      }
+      return true
+    }
+    // Pull the window inward at the viewport edge to accommodate its angle.
+    if (!fits(position)) {
+      const point = new Vector3()
+      let inside = 0
+      let outside = 1
+      for (let step = 0; step < 10; step++) {
+        const t = (inside + outside) / 2
+        if (fits(point.lerpVectors(center, position, t))) inside = t
+        else outside = t
+      }
+      position.lerpVectors(center, position, inside)
+    }
+    this.workspace.create(position)
   }
 
   #mouseDown = (event: PointerEvent) => {
@@ -140,18 +195,7 @@ export class WorkspaceScene {
     const ray = this.#mouseRay(event)
     const hit = this.#pick()
     if (!hit) {
-      const { width, height, depth } = windowDefaults
-      const position = ray.at(-depth / ray.direction.z, new Vector3())
-      const min = new Vector2()
-      const max = new Vector2()
-      this.#desktopCamera.getViewBounds(depth, min, max)
-      const halfWidth = Math.min(width / 2, (max.x - min.x) / 2)
-      const halfHeight = Math.min(height / 2, (max.y - min.y) / 2)
-      this.workspace.create({
-        x: clamp(position.x, min.x + halfWidth, max.x - halfWidth),
-        y: clamp(position.y, min.y + halfHeight, Math.max(min.y + halfHeight, max.y - halfHeight - windowTitleHeight)),
-        z: -depth,
-      })
+      this.#createDesktopWindow(ray)
       return
     }
     const target = this.#targets.get(hit.object)!
@@ -198,7 +242,7 @@ export class WorkspaceScene {
     if (!id) return
     event.preventDefault()
     const delta = event.deltaY * (event.deltaMode === 0 ? 0.004 : 0.08)
-    this.workspace.depth(id, clamp(delta, -0.9, 0.9))
+    this.workspace.depth(id, clamp(delta, -0.9, 0.9), this.#desktopCamera.position.z)
   }
 
   #createPointer(index: number): Pointer {
@@ -263,6 +307,8 @@ export class WorkspaceScene {
 
   #sync(immersive: boolean) {
     const { views, selected } = this.workspace.snapshot()
+    const eye = immersive ? this.#headPosition : this.#desktopCamera.position
+    let fogNear = fogStart
     const wanted = new Set(views.map(view => view.id))
     for (const [id, panel] of this.#windows) {
       if (wanted.has(id)) continue
@@ -284,9 +330,13 @@ export class WorkspaceScene {
       // Desktop windows created at the same depth still need a deterministic stacking order.
       panel.group.renderOrder = immersive ? 0 : focused ? views.length + 1 : index + 1
       panel.sync(view, focused, runtime, immersive)
-      if (immersive) panel.group.lookAt(this.#viewerPosition)
+      panel.group.lookAt(eye)
+      if (!immersive) fogNear = Math.max(fogNear, eye.z - view.z + panel.radius)
       for (const target of panel.targets) if (target.mesh.visible) this.#targets.set(target.mesh, target)
     }
+    // Keep desktop windows readable after Fit all pulls the camera back.
+    this.#fog.near = fogNear
+    this.#fog.far = fogNear + fogFalloff
     this.#scene.updateMatrixWorld()
   }
 
@@ -299,12 +349,21 @@ export class WorkspaceScene {
       const pose = referenceSpace && frame.getViewerPose(referenceSpace)
       if (pose) {
         const { x, y, z } = pose.transform.position
-        this.#viewerPosition.set(x, y, z)
+        this.#headPosition.set(x, y, z)
       }
     }
+    if (!immersive) this.#updateDesktopCamera()
     this.#sync(immersive)
     if (immersive) this.#updatePointers(time)
-    else this.#updateDesktopCamera()
+    else if (this.#needsDesktopFit && this.#size.x > 1 && this.#size.y > 1) {
+      this.#needsDesktopFit = false
+      const { camera, views } = this.workspace.snapshot()
+      if (!camera || views.some(view => view.z >= this.#desktopCamera.position.z - this.#desktopCamera.near)) {
+        this.#fitDesktopWindows()
+        this.#updateDesktopCamera()
+        this.#sync(false)
+      }
+    }
     this.#renderer.render(this.#scene, immersive ? this.#xrCamera : this.#desktopCamera)
   }
 
@@ -351,6 +410,8 @@ export class WorkspaceScene {
 
   #hit(pointer: Pointer): Hit | undefined {
     const { ray } = this.#raycaster
+    this.#raycaster.near = 0
+    this.#raycaster.far = Infinity
     ray.origin.copy(pointer.beam.position)
     ray.direction.set(0, 0, -1).applyQuaternion(pointer.beam.quaternion)
     return this.#pick()

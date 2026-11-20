@@ -1,6 +1,6 @@
 import {
   BackSide, CanvasTexture, DoubleSide, Group, Mesh, MeshBasicMaterial, Plane, PlaneGeometry,
-  SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Quaternion, type Ray,
+  Quaternion, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Ray,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import {
@@ -274,20 +274,13 @@ export class SceneWindow {
   get id() { return this.#view.id }
   get runtime() { return this.#runtime }
 
-  get desktopBounds() {
-    const { x, y, z } = this.group.position
-    const halfWidth = this.#frame.scale.x / 2
-    const halfHeight = this.#frame.scale.y / 2
-    const centerY = this.#frame.position.y
+  get radius() {
+    const frame = this.#frame
+    const top = frame.position.y + frame.scale.y / 2
     const bottom = this.#controls.mesh.visible
       ? this.#controls.mesh.position.y - this.#controls.mesh.scale.y / 2
-      : centerY - halfHeight
-    return {
-      left: (x - halfWidth) / -z,
-      right: (x + halfWidth) / -z,
-      bottom: (y + bottom) / -z,
-      top: (y + centerY + halfHeight) / -z,
-    }
+      : frame.position.y - frame.scale.y / 2
+    return Math.hypot(frame.scale.x / 2, Math.max(top, -bottom))
   }
 
   get #size() {
@@ -376,9 +369,7 @@ export class SceneWindow {
     const controlsVisible = Boolean(this.#runtime?.video) && view.controls
     // The resize hitbox stops at the controls when they share its plane.
     const bottomOutset = controlsVisible ? frameBorder : resizeOutset
-    // Present saved windows head-on when no headset is in use, including views behind the XR origin.
-    this.group.position.set(view.x, view.y, this.#immersive ? view.z : -Math.max(limits.near, Math.abs(view.z)))
-    if (!this.#immersive) this.group.quaternion.identity()
+    this.group.position.set(view.x, view.y, view.z)
     const frameWidth = width + frameBorder * 2
     const frameHeight = height + title + frameBorder * 2
     place(this.#back, frameWidth, frameHeight, title / 2)
@@ -510,7 +501,8 @@ export class SceneWindow {
         (height / 2 + panel.mesh.scale.y - local.y) / panel.mesh.scale.y * panel.height)
       if (pressed) return
       if (this.#immersive) return this.#moveInVr(hit)
-      return xyDrag(view, hit.point, this.group.quaternion, (dx, dy) => {
+      // Keep mouse drags at the same depth as the initial grab.
+      return xyDrag(view, hit.point, new Quaternion(), (dx, dy) => {
         this.workspace.patch(view.id, { x: clamp(view.x + dx, -100, 100), y: clamp(view.y + dy, -100, 100) })
       })
     }

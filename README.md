@@ -36,6 +36,8 @@ The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP
 
 ## Desktop controls
 
+The desktop camera uses perspective projection. Windows turn to face it just as they face the headset in VR.
+
 | Action | How to |
 | --- | --- |
 | Open a window | Click empty space in the workspace. |

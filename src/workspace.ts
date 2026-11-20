@@ -48,13 +48,13 @@ interface BrowserState {
 interface Camera {
   x: number
   y: number
-  zoom: number
+  z: number
 }
 
 interface Layout {
   views: SavedView[]
   selected: string | null
-  camera: Camera
+  camera: Camera | null
 }
 
 interface WorkspaceState extends Omit<Layout, 'views'> {
@@ -70,7 +70,7 @@ interface MediaState {
   error: string
 }
 
-const defaultCamera: Camera = { x: 0, y: 0, zoom: 1 }
+const defaultCamera: Camera = { x: 0, y: 0, z: 0 }
 const blankMedia: MediaState = { ready: false, duration: 0, time: 0, playing: false, error: '' }
 const oldSampleFolder = String.fromCodePoint(0x30d5, 0x30a3, 0x30fc, 0x30eb, 0x30c9, 0x30ce, 0x30fc, 0x30c8)
 
@@ -85,7 +85,12 @@ function finite(value: unknown, fallback: number, min: number, max: number) {
 function restore(key: string) {
   try {
     const data: unknown = JSON.parse(localStorage.getItem(key) ?? 'null')
-    if (data && typeof data === 'object') return data as Partial<Layout> & { directory?: string }
+    if (data && typeof data === 'object') {
+      return data as Partial<Omit<Layout, 'camera'>> & {
+        camera?: Partial<Camera> & { zoom?: number } | null
+        directory?: string
+      }
+    }
   } catch {
     // Unavailable storage and older or damaged snapshots are handled at startup.
   }
@@ -355,11 +360,14 @@ export class Workspace {
       ? saved.views.map(view => restoreView(view, this.#root, legacyDirectory)).filter(view => view !== undefined)
       : []
     const selected = views.find(view => view.id === saved?.selected)?.id ?? null
+    const camera = saved?.camera
+    // Reframe legacy layouts that used Fit all with a shifted projection.
+    const legacyFit = camera && camera.z === undefined && (camera.x !== 0 || camera.y !== 0 || camera.zoom !== 1)
     this.#state = {
-      camera: saved?.camera ? {
-        x: finite(saved.camera.x, 0, -200, 200),
-        y: finite(saved.camera.y, 0, -200, 200),
-        zoom: finite(saved.camera.zoom, 1, 0.002, 1.5),
+      camera: views.length && (camera === null || legacyFit) ? null : camera && views.length ? {
+        x: finite(camera.x, 0, -100, 100),
+        y: finite(camera.y, 0, -100, 100),
+        z: finite(camera.z, 0, -limits.far, 100_000),
       } : defaultCamera,
       views, selected, storageError: false,
     }
@@ -464,9 +472,12 @@ export class Workspace {
     this.#publish({ views: this.#state.views.map(view => view === current ? updated : view) }, save)
   }
 
-  depth(id: string, distance: number) {
+  depth(id: string, distance: number, cameraZ: number) {
     const view = this.#state.views.find(item => item.id === id)
-    if (view) this.patch(id, { z: (view.z > 0 ? 1 : -1) * clamp(Math.abs(view.z) + distance, limits.near, limits.far) })
+    if (view) {
+      const closest = Math.min(limits.far, Math.max(view.z, cameraZ - limits.near))
+      this.patch(id, { z: clamp(view.z - distance, -limits.far, closest) })
+    }
   }
 
   setCamera(camera: Camera) {
