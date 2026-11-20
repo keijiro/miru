@@ -30,7 +30,7 @@ Set the media folder and thumbnail cache paths in `miru.config.json`. Relative p
 
 The example uses a folder on the Windows D drive from WSL2. On macOS, you can use a path such as `/Users/yourname/Movies` or `/Volumes/Media`. The file browser lists regular files and folders.
 
-miru generates thumbnails on first access. Video thumbnails use a frame near the midpoint, with the first frame as a fallback. Thumbnails are regenerated when their source files change. If you delete the cache folder, miru recreates it on the next access.
+The file browser fits each thumbnail inside a square file tile. miru generates thumbnails on first access. Video thumbnails use a frame near the midpoint, with the first frame as a fallback. Thumbnails are regenerated when their source files change. If you delete the cache folder, miru recreates it on the next access.
 
 The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP4, M4V, WebM, OGV, and MOV videos. Playback depends on the codecs your browser supports.
 
@@ -44,18 +44,18 @@ The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP
 | Move a view | Drag its title bar. |
 | Adjust depth | Hold `Alt` and scroll over the view. |
 | Resize a view | Drag an edge to change one dimension or a corner to change both. |
-| Show view controls | Click the image or video in the view. |
-| Pan zoomed media | Zoom in, then drag the image or video. |
+| Show video controls | Click the video in the view. |
+| Pan cropped media | Drag the image or video along the cropped axis. |
 | Loop a section of a video | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
 | Fit all views on screen | Click **Fit all** at the top of the workspace. |
 
-miru automatically saves open windows, their position, size, depth, VR orientation, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, videos seek to their loop start. When you first open a video, it starts muted so the browser can autoplay it.
+Images and videos fill their views while keeping their aspect ratio. miru automatically saves open windows, their position, size, depth, VR orientation, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, videos seek to their loop start. When you first open a video, it starts muted so the browser can autoplay it.
 
 ## WSL2 and Quest Pro
 
 Start the server in WSL2 and open `http://localhost:5173` in Chrome on the same Windows host. Connect your Quest Pro to Virtual Desktop Streamer on Windows and make sure Chrome can access an OpenXR runtime. Turn on **VR mode** at the top of the app. The switch becomes available when Chrome detects a supported session. [WSL localhost access](https://learn.microsoft.com/en-us/windows/wsl/networking) · [WebXR session requirements](https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API/Startup_and_shutdown)
 
-In VR, aim at empty space and pull the controller trigger to open a file browser at the cursor, about 1 m from the controller. Use the trigger to select a file, then select **Back** in the title bar to return to its folder. Drag a side or corner to resize the window. Text, buttons, and thumbnails keep their size. A wider file browser fits more columns, and a taller one fits more rows. To move and rotate a window together, aim at it and hold the squeeze (grip) button. Move and turn the controller to position the window, or tilt the thumbstick up or down while holding it to adjust the distance. Release the button to place the window. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
+In VR, aim at empty space and pull the controller trigger to open a file browser at the cursor, about 1 m from the controller. Use the trigger to select a file, then select **Back** in the title bar to return to its folder. Hold the trigger on an image or video and drag along the cropped axis to pan. Tap the trigger on a video to show its playback controls. Drag a side or corner to resize the window. Text, buttons, and thumbnails keep their size. A wider file browser fits more columns, and a taller one fits more rows. To move and rotate a window together, aim at it and hold the squeeze (grip) button. Move and turn the controller to position the window, or tilt the thumbstick up or down while holding it to adjust the distance. Release the button to place the window. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
 
 WebXR support is implemented. The Quest Pro, Virtual Desktop, and Windows Chrome setup still needs hardware testing.
 

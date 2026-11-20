@@ -1,7 +1,6 @@
 import {
   ArrowLeft, Check, ChevronRight, CircleAlert, Film, Folder, FolderOpen, Image as ImageIcon,
-  Maximize, Minus, Monitor, Mouse, Move, Pause, Play, Plus, RefreshCw,
-  Scan, Volume2, VolumeX, X,
+  Maximize, Monitor, Mouse, Move, Pause, Play, RefreshCw, Volume2, VolumeX, X,
 } from 'lucide-react'
 import {
   useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore,
@@ -9,7 +8,7 @@ import {
 } from 'react'
 import { mediaUrl, type MediaEntry } from './media-api'
 import {
-  clamp, desktopDepth, extension, filterMedia, formatTime, limits, panned, resized, viewHeight, windowDefaults,
+  clamp, desktopDepth, filterMedia, formatTime, limits, mediaOverflow, panned, resized, viewHeight, windowDefaults,
   type View, type Workspace,
 } from './workspace'
 
@@ -84,20 +83,13 @@ function Library({ workspace, view, scroll }: {
           <h3 className="section-title">Media</h3>
           {media.length ? (
             <div className="media-grid">
-              {media.map(entry => {
-                const Kind = entry.kind === 'video' ? Film : ImageIcon
-                return (
-                  <button type="button" key={entry.path} title={entry.name} onClick={() => workspace.open(view.id, entry)}
-                    className="media-card">
-                    <Thumbnail media={entry} key={entry.version} />
-                    <span className="media-name">{entry.name}</span>
-                    <span className="media-detail">
-                      <Kind size={12} />
-                      {extension(entry.name)}
-                    </span>
-                  </button>
-                )
-              })}
+              {media.map(entry => (
+                <button type="button" key={entry.path} title={entry.name} onClick={() => workspace.open(view.id, entry)}
+                  className="media-card">
+                  <Thumbnail media={entry} key={entry.version} />
+                  <span className="media-name">{entry.name}</span>
+                </button>
+              ))}
             </div>
           ) : !busy && <p className="folder-empty">No supported media in this folder.</p>}
         </section>
@@ -151,12 +143,17 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
   order: number
 }) {
   const runtime = workspace.runtime(view.id)
+  const video = runtime?.video
   const media = useSyncExternalStore(runtime?.subscribe ?? noMediaSubscription, runtime?.snapshot ?? emptyMediaSnapshot)
   const target = useRef<HTMLDivElement>(null)
   const libraryScroll = useRef<LibraryScroll | null>(null)
   const pointer = useRef<{ action: Drag, view: View, originX: number, originY: number, pixels: number, moved: boolean, id: number } | null>(null)
   const title = view.media?.name ?? 'File browser'
   const Kind = view.media?.kind === 'video' ? Film : view.media ? ImageIcon : FolderOpen
+  const overflow = mediaOverflow(view)
+  const canPan = media.ready && (overflow.x > 0 || overflow.y > 0)
+  const surfaceClass = `view-surface${canPan ? ' can-pan' : ''}`
+  const toggleControls = () => workspace.patch(view.id, { controls: !view.controls })
 
   useLayoutEffect(() => {
     const parent = target.current
@@ -186,8 +183,9 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
       workspace.patch(view.id, { x: clamp(original.x + dx, -100, 100), y: clamp(original.y + dy, -100, 100) })
     } else if (active.action.type === 'resize') {
       workspace.patch(view.id, resized(original, dx, dy, active.action.xSide, active.action.ySide))
-    } else if (original.zoom > 1) {
-      workspace.patch(view.id, panned(original, dx, dy))
+    } else if (canPan) {
+      const pan = panned(original, dx, dy)
+      if (pan.panX !== view.panX || pan.panY !== view.panY) workspace.patch(view.id, pan)
     }
   }
   const finish = (event: PointerEvent<HTMLElement>) => {
@@ -195,12 +193,13 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
     if (!active || active.id !== event.pointerId) return
     if (event.type === 'pointerup') {
       drag(event)
-      if (active.action.type === 'content' && !active.moved) workspace.patch(view.id, { controls: !view.controls })
+      if (active.action.type === 'content' && !active.moved && video) toggleControls()
     }
     pointer.current = null
     workspace.save()
   }
   const pointerHandlers = { onPointerMove: drag, onPointerUp: finish, onPointerCancel: finish, onLostPointerCapture: finish }
+  const contentHandlers = { ...pointerHandlers, onPointerDown: (event: PointerEvent<HTMLElement>) => start(event, { type: 'content' }) }
   const moveWithKeyboard = (event: KeyboardEvent<HTMLButtonElement>) => {
     const amount = event.shiftKey ? 0.25 : 0.07
     if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
@@ -243,14 +242,14 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
             {runtime ? (
               <>
                 <div className="view-visual" ref={target} style={{
-                  transform: `translate(${view.panX * (view.zoom - 1) * 50}%, ${-view.panY * (view.zoom - 1) * 50}%) scale(${view.zoom})`,
-                }} />
+                  '--media-position': `${(1 - view.panX) * 50}% ${(1 + view.panY) * 50}%`,
+                } as CSSProperties} />
                 {media.error && <div className="view-message"><CircleAlert size={17} />{media.error}</div>}
                 {!media.ready && !media.error && <div className="view-message" role="status">Loading…</div>}
-                <button type="button" className={`view-surface${view.zoom > 1 ? ' can-pan' : ''}`}
-                  aria-label="View controls" aria-expanded={view.controls}
-                  onClick={event => { if (event.detail === 0) workspace.patch(view.id, { controls: !view.controls }) }}
-                  onPointerDown={event => start(event, { type: 'content' })} {...pointerHandlers} />
+                {video ? (
+                  <button type="button" className={surfaceClass} aria-label="Video controls" aria-expanded={view.controls}
+                    onClick={event => { if (event.detail === 0) toggleControls() }} {...contentHandlers} />
+                ) : canPan && <div className={surfaceClass} aria-hidden="true" {...contentHandlers} />}
               </>
             ) : <Library workspace={workspace} view={view} scroll={libraryScroll} />}
           </div>
@@ -260,48 +259,35 @@ function ViewWindow({ workspace, view, selected, pixels, left, top, order }: {
               {...pointerHandlers} />
           ))}
         </div>
-        {runtime && view.controls && (
+        {runtime && video && view.controls && (
           <div className="view-controls">
-            {runtime.video && (
-              <div className="video-controls">
-                <div className="timeline">
-                  <input className="range timeline-range" type="range" aria-label="Playback position"
-                    min={0} max={media.duration || 1} step={0.01} value={media.time} disabled={!media.duration}
-                    style={{ '--progress': `${timelineProgress}%` } as CSSProperties}
-                    onChange={event => runtime.seek(event.currentTarget.valueAsNumber)} />
-                  {view.loopStart > 0 && <span className="loop-tick" style={{ left: `${loopStart}%` }} />}
-                  {view.loopEnd !== null && <span className="loop-tick" style={{ left: `${loopEnd}%` }} />}
-                </div>
-                <div className="video-buttons">
-                  <button type="button" className="icon-button playback" onClick={() => runtime.togglePlayback()}
-                    aria-label={media.playing ? 'Pause' : 'Play'} title={media.playing ? 'Pause' : 'Play'} disabled={!media.ready}>
-                    {media.playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
-                  </button>
-                  <span className="video-time">{formatTime(media.time)} <span>/ {formatTime(media.duration)}</span></span>
-                  <div className="loop-actions">
-                    <button type="button" title={`Set loop start (${formatTime(view.loopStart)})`}
-                      aria-label="Set loop start" data-set={view.loopStart > 0} disabled={!media.duration}
-                      onClick={() => runtime.mark('start')}>[ A</button>
-                    <button type="button" title={`Set loop end (${formatTime(view.loopEnd ?? media.duration)})`}
-                      aria-label="Set loop end" data-set={view.loopEnd !== null} disabled={!media.duration}
-                      onClick={() => runtime.mark('end')}>B ]</button>
-                    <button type="button" className="icon-button volume-button" title={view.muted ? 'Unmute' : 'Mute'}
-                      aria-label={view.muted ? 'Unmute' : 'Mute'}
-                      onClick={() => workspace.patch(view.id, { muted: !view.muted })}>
-                      {view.muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-                    </button>
-                  </div>
-                </div>
+            <div className="timeline">
+              <input className="range timeline-range" type="range" aria-label="Playback position"
+                min={0} max={media.duration || 1} step={0.01} value={media.time} disabled={!media.duration}
+                style={{ '--progress': `${timelineProgress}%` } as CSSProperties}
+                onChange={event => runtime.seek(event.currentTarget.valueAsNumber)} />
+              {view.loopStart > 0 && <span className="loop-tick" style={{ left: `${loopStart}%` }} />}
+              {view.loopEnd !== null && <span className="loop-tick" style={{ left: `${loopEnd}%` }} />}
+            </div>
+            <div className="video-buttons">
+              <button type="button" className="icon-button playback" onClick={() => runtime.togglePlayback()}
+                aria-label={media.playing ? 'Pause' : 'Play'} title={media.playing ? 'Pause' : 'Play'} disabled={!media.ready}>
+                {media.playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+              </button>
+              <span className="video-time">{formatTime(media.time)} <span>/ {formatTime(media.duration)}</span></span>
+              <div className="loop-actions">
+                <button type="button" title={`Set loop start (${formatTime(view.loopStart)})`}
+                  aria-label="Set loop start" data-set={view.loopStart > 0} disabled={!media.duration}
+                  onClick={() => runtime.mark('start')}>[ A</button>
+                <button type="button" title={`Set loop end (${formatTime(view.loopEnd ?? media.duration)})`}
+                  aria-label="Set loop end" data-set={view.loopEnd !== null} disabled={!media.duration}
+                  onClick={() => runtime.mark('end')}>B ]</button>
+                <button type="button" className="icon-button volume-button" title={view.muted ? 'Unmute' : 'Mute'}
+                  aria-label={view.muted ? 'Unmute' : 'Mute'}
+                  onClick={() => workspace.patch(view.id, { muted: !view.muted })}>
+                  {view.muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                </button>
               </div>
-            )}
-            <div className="zoom-controls">
-              <span className="zoom-label"><Scan size={14} />Zoom</span>
-              <Minus size={12} aria-hidden="true" />
-              <input className="range zoom-range" type="range" aria-label="Zoom" min={1} max={limits.maxZoom}
-                step={0.01} value={view.zoom} style={{ '--progress': `${100 * (view.zoom - 1) / (limits.maxZoom - 1)}%` } as CSSProperties}
-                onChange={event => workspace.zoom(view.id, event.currentTarget.valueAsNumber)} />
-              <Plus size={12} aria-hidden="true" />
-              <output>{Math.round(view.zoom * 100)}%</output>
             </div>
           </div>
         )}

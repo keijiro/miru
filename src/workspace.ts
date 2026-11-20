@@ -14,7 +14,6 @@ export const limits = {
   maxHeight: maxWidth / minAutoAspect,
   near: 0.55,
   far: 24,
-  maxZoom: 4,
 }
 
 export interface View {
@@ -30,7 +29,6 @@ export interface View {
   // Derive the height from the media until the view is resized.
   height?: number
   aspect: number
-  zoom: number
   panX: number
   panY: number
   controls: boolean
@@ -82,7 +80,6 @@ export const clamp = (value: number, min: number, max: number) => Math.min(max, 
 export const viewHeight = (view: View) => view.height ?? view.width / clamp(view.aspect, minAutoAspect, maxAutoAspect)
 export const desktopDepth = (view: View) => Math.max(limits.near, Math.abs(view.z))
 export const filterMedia = (listing: DirectoryListing) => listing.entries.filter(entry => entry.kind !== 'folder')
-export const extension = (name: string) => name.slice(name.lastIndexOf('.') + 1).toUpperCase()
 
 function finite(value: unknown, fallback: number, min: number, max: number) {
   return typeof value === 'number' && Number.isFinite(value) ? clamp(value, min, max) : fallback
@@ -134,10 +131,9 @@ function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: st
     height: typeof view.height === 'number' && Number.isFinite(view.height)
       ? clamp(view.height, limits.minHeight, limits.maxHeight) : media ? undefined : windowDefaults.height,
     aspect: finite(view.aspect, 16 / 9, 0.01, 100),
-    zoom: finite(view.zoom, 1, 1, limits.maxZoom),
     panX: finite(view.panX, 0, -1, 1),
     panY: finite(view.panY, 0, -1, 1),
-    controls: view.controls === true,
+    controls: media?.kind === 'video' && view.controls === true,
     paused: view.paused === true,
     muted: view.muted !== false,
     loopStart: finite(view.loopStart, 0, 0, Number.MAX_SAFE_INTEGER),
@@ -147,7 +143,7 @@ function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: st
 }
 
 const mediaDefaults = {
-  aspect: 16 / 9, zoom: 1, panX: 0, panY: 0, controls: false,
+  aspect: 16 / 9, panX: 0, panY: 0, controls: false,
   paused: false, muted: true, loopStart: 0, loopEnd: null,
 }
 
@@ -174,12 +170,20 @@ export function resized(view: View, dx: number, dy: number, xSide: number, ySide
   }
 }
 
-export function panned(view: View, dx: number, dy: number): Partial<View> {
-  const available = view.zoom - 1
-  if (available <= 0) return {}
+export function mediaOverflow(view: View) {
+  const height = viewHeight(view)
+  const ratio = view.aspect / (view.width / height)
   return {
-    panX: clamp(view.panX + dx * 2 / (view.width * available), -1, 1),
-    panY: clamp(view.panY + dy * 2 / (viewHeight(view) * available), -1, 1),
+    x: Math.max(0, view.width * (ratio - 1)),
+    y: Math.max(0, height * (1 / ratio - 1)),
+  }
+}
+
+export function panned(view: View, dx: number, dy: number): Pick<View, 'panX' | 'panY'> {
+  const { x, y } = mediaOverflow(view)
+  return {
+    panX: x > 0 ? clamp(view.panX + dx * 2 / x, -1, 1) : view.panX,
+    panY: y > 0 ? clamp(view.panY + dy * 2 / y, -1, 1) : view.panY,
   }
 }
 
@@ -232,7 +236,7 @@ export class MediaRuntime {
       const start = clamp(this.#view.loopStart, 0, Math.max(0, duration - Math.min(0.04, duration / 2)))
       const end = this.#view.loopEnd === null ? null : Math.min(duration, this.#view.loopEnd)
       this.update({
-        aspect: video.videoWidth / video.videoHeight,
+        aspect: video.videoHeight > 0 ? video.videoWidth / video.videoHeight : this.#view.aspect,
         loopStart: start,
         loopEnd: end !== null && end > start ? end : null,
       })
@@ -492,11 +496,6 @@ export class Workspace {
     this.#publish({ views: this.#state.views.map(view => view === current ? updated : view) }, save)
   }
 
-  zoom(id: string, value: number) {
-    const zoom = clamp(value, 1, limits.maxZoom)
-    this.patch(id, zoom === 1 ? { zoom, panX: 0, panY: 0 } : { zoom })
-  }
-
   depth(id: string, distance: number) {
     const view = this.#state.views.find(item => item.id === id)
     if (view) this.patch(id, { z: (view.z > 0 ? 1 : -1) * clamp(Math.abs(view.z) + distance, limits.near, limits.far) })
@@ -510,8 +509,7 @@ export class Workspace {
     const top = Math.max(...views.map(view => (view.y + viewHeight(view) / 2) / desktopDepth(view)))
     const bottom = Math.min(...views.map(view => (view.y - viewHeight(view) / 2) / desktopDepth(view)))
     const topInset = Math.min(42, height * 0.15)
-    const controlsInset = views.some(view => view.controls && view.media?.kind === 'video') ? 123
-      : views.some(view => view.controls) ? 77 : 44
+    const controlsInset = views.some(view => view.controls && view.media?.kind === 'video') ? 90 : 44
     const bottomInset = Math.min(controlsInset, height * 0.35)
     const zoom = clamp(Math.min(width * 0.84 / (right - left), (height - topInset - bottomInset) / (top - bottom)) / base, 0.002, 1.5)
     const y = (top + bottom) / 2 + (topInset - bottomInset) / (2 * base * zoom)
