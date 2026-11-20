@@ -1,5 +1,5 @@
 import {
-  BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Fog, GridHelper, Group, Line, LineBasicMaterial,
+  BackSide, BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Fog, GridHelper, Group, Line, LineBasicMaterial,
   Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Plane, PlaneGeometry, Quaternion, Ray, Raycaster, Scene,
   SphereGeometry, SRGBColorSpace, Texture, Vector3, VideoTexture, WebGLRenderer,
   type Intersection, type XRTargetRaySpace,
@@ -20,7 +20,6 @@ const uiPixelsPerMetre = 720 / windowDefaults.width
 const metres = (pixels: number) => pixels / uiPixelsPerMetre
 const frameBorder = 0.004
 const titleHeight = 48
-const contentZ = 0.003
 const resizeInset = metres(18)
 const resizeOutset = 0.01
 
@@ -69,9 +68,31 @@ function face(group: Group, color: string | number, geometry = new PlaneGeometry
   return mesh
 }
 
-function place(mesh: Face, width: number, height: number, y: number, z: number) {
+function place(mesh: Face, width: number, height: number, y: number) {
   mesh.scale.set(width, height, 1)
-  mesh.position.set(0, y, z)
+  mesh.position.set(0, y, 0)
+}
+
+function surround(group: Group, color: string) {
+  const geometry = new PlaneGeometry(1, 1, 3, 3)
+  const indices = Array.from(geometry.index!.array)
+  indices.splice(4 * 6, 6) // Remove the centre quad to leave a rectangular opening.
+  geometry.setIndex(indices)
+  return face(group, color, geometry)
+}
+
+function cutout(mesh: Face, width: number, height: number, x: number, y: number) {
+  const left = (x - mesh.position.x - width / 2) / mesh.scale.x
+  const right = (x - mesh.position.x + width / 2) / mesh.scale.x
+  const top = (y - mesh.position.y + height / 2) / mesh.scale.y
+  const bottom = (y - mesh.position.y - height / 2) / mesh.scale.y
+  const columns = [-0.5, left, right, 0.5]
+  const rows = [0.5, top, bottom, -0.5]
+  const positions = mesh.geometry.getAttribute('position')
+  for (const [row, py] of rows.entries()) {
+    for (const [column, px] of columns.entries()) positions.setXY(row * columns.length + column, px, py)
+  }
+  positions.needsUpdate = true
 }
 
 class Panel {
@@ -87,10 +108,10 @@ class Panel {
     this.mesh = face(group, 0xffffff)
   }
 
-  layout(width: number, height: number, y: number, z: number) {
+  layout(width: number, height: number, y: number) {
     this.width = Math.round(width * uiPixelsPerMetre)
     this.height = Math.round(height * uiPixelsPerMetre)
-    place(this.mesh, width, height, y, z)
+    place(this.mesh, width, height, y)
   }
 
   paint(draw: (ctx: CanvasRenderingContext2D) => void) {
@@ -194,7 +215,7 @@ function visibleMedia(mesh: Face, view: View) {
   const x = crop(fitWidth, view.panX)
   const y = crop(fitHeight, view.panY)
   mesh.scale.set((x.upper - x.lower) * view.width, (y.upper - y.lower) * height, 1)
-  mesh.position.set((x.lower + x.upper - 1) * view.width / 2, (y.lower + y.upper - 1) * height / 2, contentZ)
+  mesh.position.set((x.lower + x.upper - 1) * view.width / 2, (y.lower + y.upper - 1) * height / 2, 0)
   const uv = mesh.geometry.getAttribute('uv')
   uv.setXY(0, x.uv0, y.uv1)
   uv.setXY(1, x.uv1, y.uv1)
@@ -231,8 +252,9 @@ class XRWindow {
   readonly group = new Group()
   readonly targets: Target[]
   #view: View
-  #frame = face(this.group, line)
-  #screen = face(this.group, '#090e15')
+  #back = face(this.group, line)
+  #frame = surround(this.group, line)
+  #screen = surround(this.group, '#090e15')
   #media = face(this.group, 0xffffff)
   #hitbox = face(this.group, 0xffffff)
   #title = new Panel(this.group)
@@ -251,7 +273,7 @@ class XRWindow {
     this.#message.mesh.visible = false
     this.#media.visible = false
     // Keep the view visible and grabbable from the back after rotation.
-    this.#frame.material.side = DoubleSide
+    this.#back.material.side = BackSide
     this.#hitbox.material.side = DoubleSide
     this.targets = [
       { mesh: this.#hitbox, panel: this, press: (hit, ray) => this.#body(hit, ray) },
@@ -285,13 +307,15 @@ class XRWindow {
       this.#lastControls = ''
     }
     const previousTitleWidth = this.#title.width
-    if (view !== this.#view || runtimeChanged || createBrowser) {
+    const relayout = view !== this.#view || runtimeChanged || createBrowser
+    if (relayout) {
       this.#view = view
       this.#layout()
     }
     this.#selected = selected
     if (repaint || this.#title.width !== previousTitleWidth) this.#paintFrame()
 
+    this.#screen.visible = Boolean(runtime)
     if (this.#browser) this.#browser.mesh.visible = !runtime
     if (!runtime) {
       this.#media.visible = false
@@ -308,7 +332,12 @@ class XRWindow {
       this.#media.material.map = texture
       this.#media.material.needsUpdate = true
     }
-    this.#media.visible = Boolean(this.#texture) && !media.error
+    const mediaVisible = Boolean(this.#texture) && !media.error
+    if (relayout || mediaVisible !== this.#media.visible) {
+      const content = mediaVisible ? this.#media : this.#message.mesh
+      cutout(this.#screen, content.scale.x, content.scale.y, content.position.x, content.position.y)
+    }
+    this.#media.visible = mediaVisible
     this.#message.mesh.visible = !this.#media.visible
     const message = media.error ? 'Could not display the file' : 'Loading…'
     const messageWidth = this.#message.width
@@ -369,21 +398,31 @@ class XRWindow {
     const { width, height } = this.#size
     const title = metres(titleHeight)
     const controls = metres(this.#runtime?.video ? (width < metres(570) ? 186 : 140) : 48)
+    const controlsVisible = Boolean(this.#runtime) && view.controls
+    // The resize hitbox stops at the controls when they share its plane.
+    const bottomOutset = controlsVisible ? frameBorder : resizeOutset
     this.group.position.set(view.x, view.y, view.z)
     this.group.quaternion.fromArray(view.orientation)
-    place(this.#frame, width + frameBorder * 2, height + title + frameBorder * 2, title / 2, -0.01)
-    place(this.#screen, width, height, 0, 0)
+    const frameWidth = width + frameBorder * 2
+    const frameHeight = height + title + frameBorder * 2
+    place(this.#back, frameWidth, frameHeight, title / 2)
+    place(this.#frame, frameWidth, frameHeight, title / 2)
+    cutout(this.#frame, width, height + title, 0, title / 2)
+    place(this.#screen, width, height, 0)
     if (view.media) visibleMedia(this.#media, view)
     this.#browser?.layout(width, height)
-    place(this.#hitbox, width + resizeOutset * 2, height + title + resizeOutset * 2, title / 2, contentZ)
-    this.#title.layout(width + frameBorder * 2, title, (height + title) / 2, contentZ)
-    this.#message.layout(Math.min(width - frameBorder * 2, metres(450)), metres(65), 0, 0.009)
-    this.#controls.layout(width, controls, -(height + controls) / 2 - frameBorder, 0.017)
-    this.#controls.mesh.visible = Boolean(this.#runtime) && view.controls
+    place(this.#hitbox, width + resizeOutset * 2, height + title + resizeOutset + bottomOutset,
+      (title + resizeOutset - bottomOutset) / 2)
+    this.#title.layout(width, title, (height + title) / 2)
+    this.#message.layout(Math.min(width - frameBorder * 2, metres(450)), metres(65), 0)
+    this.#controls.layout(width, controls, -(height + controls) / 2 - frameBorder)
+    this.#controls.mesh.visible = controlsVisible
   }
 
   #paintFrame() {
-    this.#frame.material.color.set(this.#selected ? mint : line)
+    const color = this.#selected ? mint : line
+    this.#back.material.color.set(color)
+    this.#frame.material.color.set(color)
     const panel = this.#title
     const { id, media } = this.#view
     panel.paint(ctx => {
@@ -539,7 +578,7 @@ class XRBrowser {
 
   get mesh() { return this.#panel.mesh }
 
-  layout(width: number, height: number) { this.#panel.layout(width, height, 0, contentZ) }
+  layout(width: number, height: number) { this.#panel.layout(width, height, 0) }
 
   // Use the first item of the current page throughout the drag, even if the grid reflows several times.
   startResize() { this.#pageAnchor -= this.#pageAnchor % this.#pageSize }
