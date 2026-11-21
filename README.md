@@ -58,7 +58,7 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 
 Hover near a move bar, resize handle, or **Back** to reveal all available controls of this kind on that window. The control under the pointer is highlighted.
 
-Images and videos fill their views while keeping their aspect ratio. Audio windows show the file name in the center. miru automatically saves open windows, their position, size, depth, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, audio and video seek to their saved loop start. Newly opened audio and video files start muted. Select **Unmute** to hear the audio, and press Play if the browser blocks autoplay.
+Images and videos fill their views while keeping their aspect ratio. Audio windows show the file name in the center. miru automatically saves open windows, their position, size, depth, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, audio and video seek to their saved loop start. Newly opened audio and video files start unmuted. If the browser blocks autoplay, open the playback controls and press Play.
 
 Panorama projection expects a 180° equirectangular video packed side by side, with the left eye first. In VR, the panorama centers on your heading when you enable it and stays in place as you look around. On desktop, it shows the left-eye image facing forward. The background and source window share playback, including pause, seek, and loops. Enabling another video switches the background to that video. Use **Back** in the source window to clear the projection, or toggle **180° Panorama** off.
 

@@ -128,7 +128,7 @@ function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: st
     panY: finite(view.panY, 0, -1, 1),
     controls: media !== null && media.kind !== 'image' && view.controls === true,
     paused: view.paused === true,
-    muted: view.muted !== false,
+    muted: view.muted === true,
     loopStart: finite(view.loopStart, 0, 0, Number.MAX_SAFE_INTEGER),
     loopEnd: typeof view.loopEnd === 'number' && Number.isFinite(view.loopEnd) && view.loopEnd > view.loopStart
       ? view.loopEnd : null,
@@ -137,7 +137,7 @@ function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: st
 
 const mediaDefaults = {
   aspect: 16 / 9, panX: 0, panY: 0, controls: false,
-  paused: false, muted: true, loopStart: 0, loopEnd: null,
+  paused: false, muted: false, loopStart: 0, loopEnd: null,
 }
 
 export function resizedDimensions(
@@ -522,8 +522,8 @@ export class Workspace {
     }
     this.#createRuntime({ ...view, ...patch })
     this.patch(id, patch)
-    // Use the file-selection gesture so browsers that block audio autoplay can start playback.
-    if (media.kind === 'audio') this.runtime(id)?.play()
+    // Start playback during the file-selection gesture so the browser can play sound.
+    this.runtime(id)?.play()
   }
 
   back(id: string) {
