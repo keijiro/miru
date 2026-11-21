@@ -17,7 +17,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173/) in your browser. On first launch, the workspace is empty. Click empty space to open a file browser window. The default library contains the bundled samples. To run the production build locally, stop the development server, then run `pnpm build` followed by `pnpm preview`. The local Vite server serves the media files.
+Open [http://localhost:5173](http://localhost:5173/) in your browser. On first launch, the workspace is empty. Press and hold in empty space for one second to open a file browser window. The default library contains the bundled samples. To run the production build locally, stop the development server, then run `pnpm build` followed by `pnpm preview`. The local Vite server serves the media files.
 
 ## Library configuration
 
@@ -42,7 +42,7 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 
 | Action | How to |
 | --- | --- |
-| Open a window | Click empty space in the workspace. |
+| Open a window | Press and hold in empty space for one second. A window outline and a circular progress indicator show where it will open. |
 | View a file | Select an image or video in the window's file browser. |
 | Browse a folder | Select a folder tile. Use **Previous** and **Next** to change pages, or select the **Up** tile to open the parent folder. |
 | Return to the file browser | Hover near the upper-left corner inside the media window to reveal **Back**, then click it. |
@@ -68,7 +68,7 @@ In VR mode, video windows and the active panorama use WebXR media layers. A visi
 
 Start the server in WSL2 and open `http://localhost:5173` in Chrome on the same Windows host. Connect your Quest Pro to Virtual Desktop Streamer on Windows and make sure Chrome can access an OpenXR runtime. Turn on **VR mode** at the top of the app. The switch becomes available when Chrome detects a supported session. [WSL localhost access](https://learn.microsoft.com/en-us/windows/wsl/networking) · [WebXR session requirements](https://developer.mozilla.org/en-US/docs/Web/API/WebXR_Device_API/Startup_and_shutdown)
 
-In VR, aim at empty space and pull the controller trigger to open a file browser at the cursor, about 1 m from the controller. Windows turn to face the headset as you move. Aim near any edge and hold the trigger on the bar that appears to move the window. Tilt the thumbstick up or down while holding the trigger to adjust the distance. Aim near a corner and grab its handle to resize.
+In VR, aim at empty space and hold the controller trigger for one second to open a file browser. The window outline and circular progress indicator appear where the cursor was when you first pressed the trigger, about 1 m from the controller. Windows turn to face the headset as you move. Aim near any edge and hold the trigger on the bar that appears to move the window. Tilt the thumbstick up or down while holding the trigger to adjust the distance. Aim near a corner and grab its handle to resize.
 
 Use the trigger to select a file. Aim inside the upper-left corner of the media window to reveal **Back**, then select it to return to the file's folder. Select **Close** in the file browser to close the window. Hold the trigger on an image or video and drag along the cropped axis to pan. Tap the trigger on a video to show its playback controls. Text, buttons, and thumbnails keep their size as you resize. A wider file browser fits more columns, and a taller one fits more rows. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
 

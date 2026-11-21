@@ -4,6 +4,7 @@ import {
   SphereGeometry, Vector2, Vector3, WebGLRenderer, type Ray, type XRTargetRaySpace,
 } from 'three'
 import { Panorama, type XrPanorama } from './panorama'
+import { WindowPreview } from './window-preview'
 import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
 import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
@@ -50,6 +51,7 @@ export class WorkspaceScene {
   #size = new Vector2(1, 1)
   #rendererSize = new Vector2()
   #mouse?: ActiveGrab & { id: number }
+  #windowPreviews = new Map<number | Pointer, WindowPreview>()
   #mousePosition?: Pick<MouseEvent, 'clientX' | 'clientY'>
   #resize: ResizeObserver
   #events = new AbortController()
@@ -86,10 +88,15 @@ export class WorkspaceScene {
     canvas.addEventListener('pointercancel', this.#mouseCancel, options)
     canvas.addEventListener('lostpointercapture', this.#mouseCancel, options)
     canvas.addEventListener('wheel', this.#wheel, { ...options, passive: false })
+    window.addEventListener('blur', () => this.#cancelDesktopPreviews(), options)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.#cancelDesktopPreviews()
+    }, options)
     this.#renderer.setAnimationLoop(this.#frame)
   }
 
   async start(session: XRSession) {
+    this.#cancelDesktopPreviews()
     this.#finishMouse(false)
     this.#mouseLeave()
     this.#previousFrame = 0
@@ -98,6 +105,17 @@ export class WorkspaceScene {
     this.#needsDesktopFit = true
     await this.#renderer.xr.setSession(session)
     if (this.#renderer.xr.getSession() !== session) return
+    const cancelPreviews = () => {
+      for (const pointer of this.#pointers) this.#cancelPreview(pointer)
+    }
+    const visibilityChanged = () => {
+      if (session.visibilityState !== 'visible') cancelPreviews()
+    }
+    session.addEventListener('visibilitychange', visibilityChanged)
+    session.addEventListener('end', () => {
+      session.removeEventListener('visibilitychange', visibilityChanged)
+      cancelPreviews()
+    }, { once: true })
     const layers = XrVideoLayers.create(session, this.#renderer.xr.getBaseLayer(), this.#renderer.xr.getReferenceSpace())
     if (layers) {
       this.#videoLayers = layers
@@ -135,6 +153,7 @@ export class WorkspaceScene {
 
   dispose() {
     this.#renderer.setAnimationLoop(null)
+    this.#cancelDesktopPreviews()
     this.#finishMouse(false)
     this.#events.abort()
     this.#resize.disconnect()
@@ -180,7 +199,7 @@ export class WorkspaceScene {
     return ray
   }
 
-  #createDesktopWindow(ray: Ray) {
+  #desktopWindowPosition(ray: Ray) {
     const { width, height } = windowDefaults
     const camera = this.#desktopCamera
     const eye = camera.position
@@ -213,18 +232,54 @@ export class WorkspaceScene {
       }
       position.lerpVectors(center, position, inside)
     }
-    this.workspace.create(position)
+    return position
+  }
+
+  #previewWindow(input: number | Pointer, position: Vector3, eye: Vector3) {
+    const preview = new WindowPreview(position, eye)
+    this.#windowPreviews.set(input, preview)
+    this.#scene.add(preview.group)
+  }
+
+  #cancelPreview(input: number | Pointer) {
+    const preview = this.#windowPreviews.get(input)
+    if (!preview) return
+    this.#windowPreviews.delete(input)
+    preview.dispose()
+    const canvas = this.#renderer.domElement
+    if (typeof input === 'number' && canvas.hasPointerCapture(input)) canvas.releasePointerCapture(input)
+  }
+
+  #cancelDesktopPreviews() {
+    for (const input of this.#windowPreviews.keys()) {
+      if (typeof input === 'number') this.#cancelPreview(input)
+    }
+  }
+
+  #updateWindowPreviews(eye: Vector3) {
+    const now = performance.now()
+    let created = false
+    for (const [input, preview] of this.#windowPreviews) {
+      if (preview.update(now, eye)) {
+        this.workspace.create(preview.group.position)
+        this.#cancelPreview(input)
+        created = true
+      }
+    }
+    return created
   }
 
   #mouseDown = (event: PointerEvent) => {
-    if (event.button !== 0 || !event.isPrimary || this.#mouse || this.#renderer.xr.getSession()) return
+    if (event.button !== 0 || !event.isPrimary || this.#mouse || this.#windowPreviews.has(event.pointerId)
+      || this.#renderer.xr.getSession()) return
     this.#updateDesktopCamera()
     this.#sync(false)
     this.#mousePosition = { clientX: event.clientX, clientY: event.clientY }
     const ray = this.#mouseRay(event)
     const picked = this.#pick()
     if (!picked) {
-      this.#createDesktopWindow(ray)
+      this.#renderer.domElement.setPointerCapture(event.pointerId)
+      this.#previewWindow(event.pointerId, this.#desktopWindowPosition(ray), this.#desktopCamera.position)
       return
     }
     const { panel, part, hit } = picked
@@ -237,6 +292,7 @@ export class WorkspaceScene {
 
   #mouseMove = (event: PointerEvent) => {
     if (event.isPrimary) this.#mousePosition = { clientX: event.clientX, clientY: event.clientY }
+    if (!(event.buttons & 1)) this.#cancelPreview(event.pointerId)
     if (this.#mouse?.id === event.pointerId) {
       this.#mouse.action.update(this.#mouseRay(event), 0)
     }
@@ -272,12 +328,14 @@ export class WorkspaceScene {
   }
 
   #mouseUp = (event: PointerEvent) => {
+    this.#cancelPreview(event.pointerId)
     if (this.#mouse?.id !== event.pointerId) return
     this.#mouseMove(event)
     this.#finishMouse(true)
   }
 
   #mouseCancel = (event: PointerEvent) => {
+    this.#cancelPreview(event.pointerId)
     if (this.#mouse?.id === event.pointerId) this.#finishMouse(false)
   }
 
@@ -322,19 +380,23 @@ export class WorkspaceScene {
       this.#resetPointer(pointer)
     })
     controller.addEventListener('selectstart', () => this.#press(pointer))
-    controller.addEventListener('selectend', () => this.#finishGrab(pointer, controller.visible))
+    controller.addEventListener('selectend', () => {
+      this.#cancelPreview(pointer)
+      this.#finishGrab(pointer, controller.visible)
+    })
     return pointer
   }
 
   #press(pointer: Pointer) {
-    if (!pointer.source || !pointer.controller.visible || pointer.grab) return
+    if (!pointer.source || !pointer.controller.visible || pointer.grab || this.#windowPreviews.has(pointer)) return
     // Use the same filtered pose as the displayed ray.
     if (!pointer.beam.visible) this.#filterPose(pointer, 1)
     this.#sync(true)
     const picked = this.#point(pointer)
     if (!picked) {
-      const { x, y, z } = this.#raycaster.ray.at(windowDefaults.depth, new Vector3())
-      this.workspace.create({ x, y, z })
+      if (this.#renderer.xr.getSession()?.visibilityState !== 'visible') return
+      const position = this.#raycaster.ray.at(windowDefaults.depth, new Vector3())
+      this.#previewWindow(pointer, position, this.#headPosition)
       return
     }
     const { panel, part, hit } = picked
@@ -423,6 +485,7 @@ export class WorkspaceScene {
         this.#sync(false)
       }
     }
+    if (this.#updateWindowPreviews(immersive ? this.#headPosition : this.#desktopCamera.position)) this.#sync(immersive)
     if (!immersive) this.#updateMouseHover()
     for (const panel of this.#windows.values()) panel.updateAffordances()
     const { panorama } = this.workspace.snapshot()
@@ -467,6 +530,7 @@ export class WorkspaceScene {
   }
 
   #resetPointer(pointer: Pointer) {
+    this.#cancelPreview(pointer)
     this.#finishGrab(pointer, false)
     pointer.beam.visible = false
     pointer.cursor.visible = false
