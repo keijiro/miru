@@ -51,7 +51,7 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 | Adjust depth | Hold `Alt` and scroll over the view. |
 | Resize a view | Hover near any corner and drag the handle that appears. |
 | Show playback controls | Click inside an audio or video window. |
-| Toggle the panorama background | Select **180° Panorama** in the video controls, or **Panorama** in a narrow window. |
+| Toggle the panorama background | Select the hemisphere icon in the video controls. |
 | Pan cropped media | Drag the image or video along the cropped axis. |
 | Loop a section of an audio or video file | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
 | Fit all views on screen | Click **Fit all** at the top of the workspace. |
@@ -60,7 +60,7 @@ Hover near a move bar, resize handle, or **Back** to reveal all available contro
 
 Images and videos fill their views while keeping their aspect ratio. Audio windows show the file name in the center. miru automatically saves open windows, their position, size, depth, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, audio and video seek to their saved loop start. Newly opened audio and video files start unmuted. If the browser blocks autoplay, open the playback controls and press Play.
 
-Panorama projection expects a 180° equirectangular video packed side by side, with the left eye first. In VR, the panorama centers on your heading when you enable it and stays in place as you look around. On desktop, it shows the left-eye image facing forward. The background and source window share playback, including pause, seek, and loops. Enabling another video switches the background to that video. Use **Back** in the source window to clear the projection, or toggle **180° Panorama** off.
+Panorama projection expects a 180° equirectangular video packed side by side, with the left eye first. In VR, the panorama centers on your heading when you enable it and stays in place as you look around. On desktop, it shows the left-eye image facing forward. The background and source window share playback, including pause, seek, and loops. Enabling another video switches the background to that video. Use **Back** in the source window to clear the projection, or select the hemisphere icon again.
 
 In VR mode, video windows and the active panorama use WebXR media layers. A visible video window, the workspace, and an active panorama each use one layer. Video windows show a warning if the browser or XR runtime cannot provide media layers. If the session reaches its layer limit, affected windows show the video when a layer becomes available.
 

@@ -3,7 +3,7 @@ export const uiColors = {
   surface: '#232323',
   control: '#292929',
   hover: '#414141',
-  active: '#3a3a3a',
+  active: '#303030',
   text: '#eeeeee',
   muted: '#bdbdbd',
   accent: '#dedede',

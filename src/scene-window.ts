@@ -60,6 +60,10 @@ interface Grip {
 type Affordance = Grip | 'back'
 export type WindowPart = Affordance | ButtonArea | 'body' | 'controls'
 type Action = () => void
+interface ButtonStyle {
+  active?: 'outline' | 'fill'
+  icon?: (ctx: CanvasRenderingContext2D, x: number, y: number) => void
+}
 interface ButtonArea {
   kind: 'button'
   x: number
@@ -163,10 +167,14 @@ class Panel {
     this.#texture.needsUpdate = true
   }
 
-  button(label: string, x: number, y: number, w: number, h: number, run: Action, active = false, key = label) {
-    flatButton(this.#context, label, x, y, w, h, this.fillFor(key, active))
-    if (active) outlineActiveButton(this.#context, x, y, w, h)
-    this.action(x, y, w, h, run, key)
+  button(label: string, x: number, y: number, w: number, h: number, run: Action, style: ButtonStyle = {}) {
+    const ctx = this.#context
+    const fill = this.#hovered.has(label) ? uiColors.hover : style.active === 'fill' ? uiColors.active : undefined
+    if (fill) rect(ctx, x, y, w, h, fill, uiControlRadius)
+    if (style.active === 'outline') outlineActiveButton(ctx, x, y, w, h)
+    if (style.icon) style.icon(ctx, x + w / 2, y + h / 2)
+    else buttonLabel(ctx, label, x, y, w, h)
+    this.action(x, y, w, h, run, label)
   }
 
   action(x: number, y: number, w: number, h: number, run: Action, key: string) {
@@ -179,9 +187,8 @@ class Panel {
     return this.#buttons.find(({ x: left, y: top, w, h }) => x >= left && x <= left + w && y >= top && y <= top + h)
   }
 
-  fillFor(key: string, active = false) {
-    if (this.#hovered.has(key)) return uiColors.hover
-    return active ? uiColors.active : uiColors.control
+  cardFill(key: string) {
+    return this.#hovered.has(key) ? uiColors.hover : uiColors.control
   }
 
   updateHover() {
@@ -233,14 +240,64 @@ function text(
   ctx.fillText(value, x, y)
 }
 
-function flatButton(
-  ctx: CanvasRenderingContext2D, label: string, x: number, y: number, w: number, h: number,
-  fill: string, fontSize = 22,
-) {
-  rect(ctx, x, y, w, h, fill, uiControlRadius)
+function buttonLabel(ctx: CanvasRenderingContext2D, label: string, x: number, y: number, w: number, h: number, fontSize = 22) {
   ctx.textAlign = 'center'
   text(ctx, label, x + w / 2, y + h / 2 + 1, fontSize, uiColors.text, w - 8)
   ctx.textAlign = 'left'
+}
+
+function playIcon(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.beginPath()
+  ctx.moveTo(x - 6, y - 9)
+  ctx.lineTo(x + 9, y)
+  ctx.lineTo(x - 6, y + 9)
+  ctx.closePath()
+  ctx.fillStyle = uiColors.text
+  ctx.fill()
+}
+
+function pauseIcon(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  rect(ctx, x - 8, y - 9, 5, 18, uiColors.text, 1)
+  rect(ctx, x + 3, y - 9, 5, 18, uiColors.text, 1)
+}
+
+function panoramaIcon(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.save()
+  ctx.strokeStyle = uiColors.text
+  ctx.lineWidth = 1.75
+  ctx.beginPath()
+  ctx.arc(x, y + 3, 11, Math.PI, 0)
+  ctx.ellipse(x, y + 3, 11, 4.5, 0, 0, 2 * Math.PI)
+  ctx.stroke()
+  ctx.restore()
+}
+
+function speakerIcon(ctx: CanvasRenderingContext2D, x: number, y: number, muted: boolean) {
+  ctx.save()
+  ctx.translate(x, y)
+  ctx.strokeStyle = uiColors.text
+  ctx.lineWidth = 1.75
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  ctx.moveTo(-11, -3)
+  ctx.lineTo(-7, -3)
+  ctx.lineTo(-1, -8)
+  ctx.lineTo(-1, 8)
+  ctx.lineTo(-7, 3)
+  ctx.lineTo(-11, 3)
+  ctx.closePath()
+  if (muted) {
+    ctx.moveTo(-8, -10)
+    ctx.lineTo(10, 10)
+  } else {
+    ctx.moveTo(4, -4)
+    ctx.quadraticCurveTo(8, 0, 4, 4)
+    ctx.moveTo(8, -7)
+    ctx.quadraticCurveTo(15, 0, 8, 7)
+  }
+  ctx.stroke()
+  ctx.restore()
 }
 
 function slider(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, progress: number) {
@@ -306,6 +363,7 @@ export class SceneWindow {
   #controls = new Panel(this.group)
   #message = new Panel(this.group)
   #returnButton = new Panel(this.group, true)
+  #returnHovered = false
   #grips: Grip[] = gripDirections.map(([x, y]) => ({
     kind: 'grip', x, y,
     horizontal: y ? gripFace(this.group) : undefined,
@@ -336,7 +394,7 @@ export class SceneWindow {
     button.material.polygonOffsetFactor = -1
     button.material.polygonOffsetUnits = -1
     this.#layout()
-    this.#returnButton.paint(ctx => flatButton(ctx, '← Back', 0, 0, backWidth, backHeight, uiColors.active, 26))
+    this.#paintReturnButton()
   }
 
   get id() { return this.#view.id }
@@ -498,7 +556,12 @@ export class SceneWindow {
     }
     const button = this.#returnButton.mesh
     button.visible = visible && Boolean(this.#view.media)
-    button.material.opacity = this.#highlighted.has('back') ? 1 : dimOpacity
+    const returnHovered = this.#highlighted.has('back')
+    if (this.#returnHovered !== returnHovered) {
+      this.#returnHovered = returnHovered
+      this.#paintReturnButton()
+    }
+    button.material.opacity = returnHovered ? 1 : dimOpacity
     this.#highlighted.clear()
   }
 
@@ -562,6 +625,13 @@ export class SceneWindow {
     }
   }
 
+  #paintReturnButton() {
+    this.#returnButton.paint(ctx => {
+      if (this.#returnHovered) rect(ctx, 0, 0, backWidth, backHeight, uiColors.hover, uiControlRadius)
+      buttonLabel(ctx, '← Back', 0, 0, backWidth, backHeight, 26)
+    })
+  }
+
   #paintControls(runtime: MediaRuntime) {
     const view = this.#view
     const media = runtime.snapshot()
@@ -584,23 +654,27 @@ export class SceneWindow {
       const compact = width < compactControlsWidth
       const gap = compact ? 6 : 12
       const loopWidth = compact ? 40 : 58
-      const muteWidth = compact ? 80 : 98
-      const panoramaWidth = compact ? 116 : 165
+      const iconWidth = 56
       const right = width - (compact ? 6 : 25)
-      const panoramaX = right - panoramaWidth
-      const muteX = (video ? panoramaX - gap : right) - muteWidth
+      const panoramaX = right - iconWidth
+      const muteX = (video && media.ready ? panoramaX - gap : right) - iconWidth
       const endX = muteX - gap - loopWidth
       const startX = endX - gap - loopWidth
       const loopY = compact ? 91 : 40
-      panel.button(media.playing ? 'Ⅱ' : '▷', 19, 40, 64, 43, () => runtime.togglePlayback(), false, 'playback')
+      panel.button('Playback', 19, 40, 64, 43, () => runtime.togglePlayback(),
+        { icon: media.playing ? pauseIcon : playIcon })
       text(ctx, `${formatTime(media.time)} / ${formatTime(media.duration)}`, 98, 62, 21, uiColors.muted,
         (compact ? width - 16 : startX - 12) - 98)
-      panel.button('[ A', startX, loopY, loopWidth, 43, () => runtime.mark('start'), view.loopStart > 0)
-      panel.button('B ]', endX, loopY, loopWidth, 43, () => runtime.mark('end'), view.loopEnd !== null)
-      panel.button(view.muted ? 'Unmute' : 'Mute', muteX, loopY, muteWidth, 43,
-        () => this.workspace.patch(view.id, { muted: !view.muted }), !view.muted, 'audio')
-      if (video && media.ready) panel.button(compact ? 'Panorama' : '180° Panorama', panoramaX, loopY, panoramaWidth, 43,
-        () => this.workspace.togglePanorama(view.id), panorama)
+      panel.button('[ A', startX, loopY, loopWidth, 43, () => runtime.mark('start'),
+        { active: view.loopStart > 0 ? 'outline' : undefined })
+      panel.button('B ]', endX, loopY, loopWidth, 43, () => runtime.mark('end'),
+        { active: view.loopEnd !== null ? 'outline' : undefined })
+      panel.button('Mute', muteX, loopY, iconWidth, 43, () => this.workspace.patch(view.id, { muted: !view.muted }),
+        { icon: (ctx, x, y) => speakerIcon(ctx, x, y, view.muted) })
+      if (video && media.ready) {
+        panel.button('180° Panorama', panoramaX, loopY, iconWidth, 43, () => this.workspace.togglePanorama(view.id),
+          { icon: panoramaIcon, active: panorama ? 'fill' : undefined })
+      }
     })
   }
 
@@ -794,7 +868,7 @@ class FileBrowser {
 
   #card(ctx: CanvasRenderingContext2D, item: BrowserEntry, x: number, y: number) {
     const key = `entry:${item.path}`
-    rect(ctx, x, y, cardSize, cardSize, this.#panel.fillFor(key), 6)
+    rect(ctx, x, y, cardSize, cardSize, this.#panel.cardFill(key), 6)
     text(ctx, item.name, x + 12, y + cardSize - 17, 22, uiColors.text, cardSize - 24)
     if (item.kind === 'folder' || item.kind === 'up') {
       ctx.beginPath()
@@ -844,6 +918,11 @@ class FileBrowser {
       const h = image.naturalHeight * ratio
       ctx.drawImage(image, x + 8 + (destW - w) / 2, y + 8 + (destH - h) / 2, w, h)
     }
-    if (item.kind === 'video') flatButton(ctx, '▷', x + cardSize - 52, y + destH - 30, 36, 30, uiColors.control)
+    if (item.kind === 'video') {
+      const badgeX = x + cardSize - 52
+      const badgeY = y + destH - 30
+      rect(ctx, badgeX, badgeY, 36, 30, uiColors.control, uiControlRadius)
+      buttonLabel(ctx, '▷', badgeX, badgeY, 36, 30)
+    }
   }
 }

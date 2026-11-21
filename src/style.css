@@ -25,15 +25,12 @@ h1, p { margin: 0; }
 .app-actions { top: 16px; display: flex; align-items: center; gap: 8px; }
 .control-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px;
-  border: 1px solid var(--ui-outline); border-radius: var(--ui-control-radius); padding: 0 11px;
-  background: var(--ui-control); font-size: .875rem; white-space: nowrap; pointer-events: auto;
+  border: 0; border-radius: var(--ui-control-radius); padding: 0 12px;
+  background: transparent; font-size: .875rem; white-space: nowrap; pointer-events: auto;
 }
-.control-button:enabled:where(:hover) { background: var(--ui-hover); }
-.control-button:disabled { color: #999999; border-color: #3f3f3f; }
-.control-button[aria-checked="true"] {
-  background: var(--ui-accent); border-color: var(--ui-accent); color: var(--ui-background);
-}
-.control-button[aria-checked="true"]:hover { background: var(--ui-text); }
+.control-button:enabled:hover { background: var(--ui-hover); }
+.control-button:disabled { color: #999999; }
+.control-button[aria-checked="true"] { font-weight: 500; }
 
 .boot {
   height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
