@@ -1,6 +1,6 @@
 import {
   BackSide, CanvasTexture, DoubleSide, Group, Mesh, MeshBasicMaterial, Plane, PlaneGeometry,
-  Quaternion, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Ray, type ShaderMaterial,
+  Quaternion, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Ray, type Scene, type ShaderMaterial,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import { uiColors, uiControlRadius, uiFontFamily, uiFontWeight } from './ui-style'
@@ -28,6 +28,7 @@ const gripFadeDuration = 90
 const openingLineDuration = 45
 const openingExpandDuration = 50
 const openingFlashDuration = 30
+const outlineDuration = 110
 const gripDirections = [
   [-1, 0], [1, 0], [0, -1], [0, 1],
   [-1, -1], [1, -1], [-1, 1], [1, 1],
@@ -151,6 +152,47 @@ function cutout(mesh: Face, width: number, height: number, x: number, y: number)
     for (const [column, px] of columns.entries()) positions.setXY(row * columns.length + column, px, py)
   }
   positions.needsUpdate = true
+}
+
+export class PanelOutline {
+  readonly mesh: Face
+  #width: number
+  #height: number
+  #thickness = metres(2)
+
+  constructor(group: Group, bounds: Face, private readonly started: number, private readonly expanding: boolean) {
+    this.mesh = surround(group, uiColors.accent)
+    this.mesh.position.copy(bounds.position)
+    this.#width = bounds.scale.x
+    this.#height = bounds.scale.y
+    this.mesh.material.side = DoubleSide
+    this.mesh.material.depthWrite = false
+    this.mesh.material.polygonOffset = expanding
+    this.mesh.material.polygonOffsetFactor = -1
+    this.mesh.material.polygonOffsetUnits = -1
+    this.mesh.renderOrder = 1
+    this.update(started)
+  }
+
+  update(now: number) {
+    const progress = clamp((now - this.started) / outlineDuration, 0, 1)
+    const scale = this.expanding ? progress : 1 - progress
+    const width = this.#width * scale
+    const height = this.#height * scale
+    const border = 2 * this.#thickness
+    this.mesh.visible = width > border && height > border
+    if (this.mesh.visible) {
+      this.mesh.scale.set(width, height, 1)
+      cutout(this.mesh, width - border, height - border, this.mesh.position.x, this.mesh.position.y)
+    }
+    return progress === 1
+  }
+
+  dispose() {
+    this.mesh.removeFromParent()
+    this.mesh.geometry.dispose()
+    this.mesh.material.dispose()
+  }
 }
 
 class Panel {
@@ -404,6 +446,8 @@ export class SceneWindow {
   #returnButton = new Panel(this.group, true)
   #bodyOpening = new PanelOpening(this.group)
   #controlsOpening = new PanelOpening(this.group)
+  #mediaOutline?: PanelOutline
+  #controlsClosing?: PanelOutline
   #showControls = false
   #returnHovered = false
   #gripOpacity = 0
@@ -480,10 +524,14 @@ export class SceneWindow {
     return Math.hypot(width / 2 + windowGripReach, bottom)
   }
 
+  get #showingMedia() {
+    return Boolean(this.#view.media) && !this.#mediaOutline
+  }
+
   get #size() {
-    const { width, media } = this.#view
+    const { width } = this.#view
     const height = viewHeight(this.#view)
-    return media ? { width, height } : {
+    return this.#showingMedia ? { width, height } : {
       width: Math.max(width, browserMinimum.minWidth),
       height: Math.max(height, browserMinimum.minHeight),
     }
@@ -494,6 +542,22 @@ export class SceneWindow {
     const runtimeChanged = runtime !== this.#runtime
     const modeChanged = immersive !== this.#immersive
     const createBrowser = !runtime && !this.#browser
+    if (!this.#view.media && view.media) this.#mediaOutline = new PanelOutline(this.group, this.#back, now, true)
+    const outline = this.#mediaOutline
+    if (outline && (!view.media || outline.update(now))) {
+      outline.dispose()
+      this.#mediaOutline = undefined
+    }
+    const showBrowser = !runtime || Boolean(this.#mediaOutline)
+    const showControls = !showBrowser && Boolean(runtime?.playback) && view.controls
+    const controls = this.#controls.mesh
+    if (this.#showControls && !showControls) {
+      this.#controlsClosing = new PanelOutline(this.group, controls, now, false)
+    }
+    if (this.#controlsClosing && (showControls || this.#controlsClosing.update(now))) {
+      this.#controlsClosing.dispose()
+      this.#controlsClosing = undefined
+    }
     if (createBrowser) this.#browser = new FileBrowser(this.#bodyGroup, this.workspace, view.id, this.end)
     if (runtimeChanged || (modeChanged && runtime?.video)) {
       runtime?.setLoopFrameCapture(nativeVideo)
@@ -506,6 +570,7 @@ export class SceneWindow {
       this.#lastControls = ''
     }
     const relayout = view !== this.#view || runtimeChanged || createBrowser || modeChanged
+      || outline !== this.#mediaOutline
     if (relayout) {
       this.#view = view
       this.#immersive = immersive
@@ -514,11 +579,10 @@ export class SceneWindow {
     // Three.js uses the innermost group's render order for its meshes.
     this.#bodyGroup.renderOrder = this.group.renderOrder
     this.#bodyGroup.visible = this.#hitbox.visible = this.#bodyOpening.update(now, true, this.#back)
-    this.#showControls = Boolean(runtime?.playback) && view.controls
-    const controls = this.#controls.mesh
-    controls.visible = this.#controlsOpening.update(now, this.#showControls, controls)
-    if (this.#browser) this.#browser.mesh.visible = !runtime
-    if (!runtime) {
+    this.#showControls = showControls
+    controls.visible = this.#controlsOpening.update(now, showControls, controls)
+    if (this.#browser) this.#browser.mesh.visible = showBrowser
+    if (!runtime || this.#mediaOutline) {
       this.#screen.visible = false
       this.#media.visible = false
       this.#message.mesh.visible = false
@@ -570,7 +634,7 @@ export class SceneWindow {
     const x = (uv.x - 0.5) * this.#hitbox.scale.x
     const y = (uv.y - 0.5) * this.#hitbox.scale.y
     const button = this.#returnButton.mesh
-    if (this.#view.media && Math.abs(x - button.position.x) <= button.scale.x / 2 + backReach
+    if (this.#showingMedia && Math.abs(x - button.position.x) <= button.scale.x / 2 + backReach
       && Math.abs(y - button.position.y) <= button.scale.y / 2 + backReach) return 'back'
 
     const dx = Math.abs(x) - width / 2
@@ -618,7 +682,7 @@ export class SceneWindow {
       }
     }
     const button = this.#returnButton.mesh
-    button.visible = visible && Boolean(this.#view.media)
+    button.visible = visible && this.#showingMedia
     const returnHovered = this.#visibleHighlights.has('back')
     if (this.#returnHovered !== returnHovered) {
       this.#returnHovered = returnHovered
@@ -636,13 +700,24 @@ export class SceneWindow {
       }
       return part.x && part.y ? this.#resize(hit, part.x, part.y) : this.#move(hit)
     }
-    if (part === 'body') return this.#body(hit)
+    if (part === 'body' && this.#showingMedia) return this.#body(hit)
     if (part === 'controls') return this.#control(hit, ray)
     if (part === 'back') this.workspace.back(this.id)
   }
 
+  closeOutlines(scene: Scene, now: number) {
+    const outlines = [new PanelOutline(this.group, this.#back, now, false)]
+    if (this.#showControls) outlines.push(new PanelOutline(this.group, this.#controls.mesh, now, false))
+    if (this.#controlsClosing) outlines.push(this.#controlsClosing)
+    this.#controlsClosing = undefined
+    for (const outline of outlines) scene.attach(outline.mesh)
+    return outlines
+  }
+
   dispose() {
     this.group.removeFromParent()
+    this.#mediaOutline?.dispose()
+    this.#controlsClosing?.dispose()
     this.#texture?.dispose()
     this.#browser?.dispose()
     for (const panel of [this.#returnButton, this.#controls, this.#message]) panel.dispose()
@@ -769,7 +844,7 @@ export class SceneWindow {
   }
 
   #resize(hit: Hit, x: number, y: number) {
-    const browser = !this.#view.media ? this.#browser : undefined
+    const browser = !this.#showingMedia ? this.#browser : undefined
     const view = browser ? { ...this.#view, ...this.#size } : this.#view
     const orientation = this.group.quaternion.clone()
     const height = viewHeight(view)

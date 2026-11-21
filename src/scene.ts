@@ -5,7 +5,7 @@ import {
 } from 'three'
 import { Panorama, type XrPanorama } from './panorama'
 import { WindowPreview } from './window-preview'
-import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
+import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type PanelOutline, type WindowPart } from './scene-window'
 import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
 import { videoLayerUnavailable, XrVideoLayers } from './xr-video-layers'
@@ -45,6 +45,7 @@ export class WorkspaceScene {
   #floor = new GridHelper(70, 70, uiColors.active, uiColors.control)
   #panorama = new Panorama(this.#scene)
   #windows = new Map<string, SceneWindow>()
+  #closingOutlines = new Set<PanelOutline>()
   #pointers: Pointer[]
   #raycaster = new Raycaster()
   #targets = new Map<Face, SceneWindow>()
@@ -161,6 +162,7 @@ export class WorkspaceScene {
     this.#videoLayers = undefined
     this.#panorama.dispose()
     for (const panel of this.#windows.values()) panel.dispose()
+    for (const outline of this.#closingOutlines) outline.dispose()
     for (const pointer of this.#pointers) {
       this.#resetPointer(pointer)
       pointer.beam.geometry.dispose()
@@ -178,9 +180,12 @@ export class WorkspaceScene {
     const pixelRatio = Math.min(window.devicePixelRatio, 2)
     if (pixelRatio !== this.#renderer.getPixelRatio()) this.#renderer.setPixelRatio(pixelRatio)
     if (!this.#renderer.getSize(this.#rendererSize).equals(this.#size)) this.#renderer.setSize(width, height, false)
-    const position = this.workspace.snapshot().camera
+    const { camera: position, views } = this.workspace.snapshot()
     const camera = this.#desktopCamera
-    if (position) camera.position.set(position.x, position.y, position.z)
+    // Keep the last window's outline on screen until the empty workspace resets its camera.
+    if (position && (views.length || (!this.#windows.size && !this.#closingOutlines.size))) {
+      camera.position.set(position.x, position.y, position.z)
+    }
     camera.aspect = width / height
     // Widen the view on narrow screens so a new window fits across the canvas.
     camera.zoom = Math.min(1, camera.aspect * 1.92 * Math.tan(camera.fov * Math.PI / 360))
@@ -433,6 +438,7 @@ export class WorkspaceScene {
     for (const [id, panel] of this.#windows) {
       if (wanted.has(id)) continue
       this.#cancelGrabs(panel)
+      for (const outline of panel.closeOutlines(this.#scene, now)) this.#closingOutlines.add(outline)
       panel.dispose()
       this.#windows.delete(id)
     }
@@ -490,6 +496,11 @@ export class WorkspaceScene {
     if (!immersive) this.#updateMouseHover()
     const now = performance.now()
     for (const panel of this.#windows.values()) panel.updateAffordances(now)
+    for (const outline of this.#closingOutlines) {
+      if (!outline.update(now)) continue
+      outline.dispose()
+      this.#closingOutlines.delete(outline)
+    }
     const { panorama } = this.workspace.snapshot()
     let xrPanorama: XrPanorama | undefined
     if (immersive) {
