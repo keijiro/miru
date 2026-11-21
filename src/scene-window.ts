@@ -5,7 +5,7 @@ import {
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import { uiColors, uiControlRadius, uiFontFamily, uiFontWeight } from './ui-style'
 import {
-  clamp, formatTime, limits, mediaOverflow, panned, resizedDimensions, viewHeight, windowDefaults,
+  clamp, formatTime, limits, mediaOverflow, panned, resizedDimensions, windowDefaults,
   type MediaRuntime, type View, type Workspace,
 } from './workspace'
 
@@ -140,13 +140,11 @@ function surround(group: Group, color: string) {
   return face(group, color, geometry)
 }
 
-function cutout(mesh: Face, width: number, height: number, x: number, y: number) {
-  const left = (x - mesh.position.x - width / 2) / mesh.scale.x
-  const right = (x - mesh.position.x + width / 2) / mesh.scale.x
-  const top = (y - mesh.position.y + height / 2) / mesh.scale.y
-  const bottom = (y - mesh.position.y - height / 2) / mesh.scale.y
-  const columns = [-0.5, left, right, 0.5]
-  const rows = [0.5, top, bottom, -0.5]
+function cutout(mesh: Face, width: number, height: number) {
+  const halfWidth = width / (2 * mesh.scale.x)
+  const halfHeight = height / (2 * mesh.scale.y)
+  const columns = [-0.5, -halfWidth, halfWidth, 0.5]
+  const rows = [0.5, halfHeight, -halfHeight, -0.5]
   const positions = mesh.geometry.getAttribute('position')
   for (const [row, py] of rows.entries()) {
     for (const [column, px] of columns.entries()) positions.setXY(row * columns.length + column, px, py)
@@ -183,7 +181,7 @@ export class PanelOutline {
     this.mesh.visible = width > border && height > border
     if (this.mesh.visible) {
       this.mesh.scale.set(width, height, 1)
-      cutout(this.mesh, width - border, height - border, this.mesh.position.x, this.mesh.position.y)
+      cutout(this.mesh, width - border, height - border)
     }
     return progress === 1
   }
@@ -396,7 +394,7 @@ function slider(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, 
 function cropMedia(mesh: Face, view: View) {
   const { x, y } = mediaOverflow(view)
   const cropX = x / (view.width + x)
-  const cropY = y / (viewHeight(view) + y)
+  const cropY = y / (view.height + y)
   const left = (1 - view.panX) * cropX / 2
   const right = 1 - (1 + view.panX) * cropX / 2
   const bottom = (1 - view.panY) * cropY / 2
@@ -449,6 +447,7 @@ export class SceneWindow {
   #mediaOutline?: PanelOutline
   #controlsClosing?: PanelOutline
   #showControls = false
+  #compactControls = false
   #returnHovered = false
   #gripOpacity = 0
   #lastAffordanceUpdate?: number
@@ -529,8 +528,7 @@ export class SceneWindow {
   }
 
   get #size() {
-    const { width } = this.#view
-    const height = viewHeight(this.#view)
+    const { width, height } = this.#view
     return this.#showingMedia ? { width, height } : {
       width: Math.max(width, browserMinimum.minWidth),
       height: Math.max(height, browserMinimum.minHeight),
@@ -592,14 +590,14 @@ export class SceneWindow {
     const media = runtime.snapshot()
     if (view.media?.kind === 'audio') {
       this.#media.visible = false
-      this.#showMessage(media.error ? 'Could not play the file' : view.media.name, !media.error)
+      this.#showMessage(media.failed ? 'Could not play the file' : view.media.name, !media.failed)
     } else {
       if (media.ready && !nativeVideo && !this.#texture) {
         if (runtime.video) this.#setMediaTexture(new VideoTexture(runtime.video))
         else if (runtime.image) this.#setMediaTexture(new Texture(runtime.image))
       }
-      this.#media.visible = (nativeVideo ? media.ready : Boolean(this.#texture)) && !media.error
-      this.#showMessage(media.error ? 'Could not display the file' : this.#media.visible ? '' : 'Loading…')
+      this.#media.visible = (nativeVideo ? media.ready : Boolean(this.#texture)) && !media.failed
+      this.#showMessage(media.failed ? 'Could not display the file' : this.#media.visible ? '' : 'Loading…')
     }
     if (this.#showControls) this.#paintControls(runtime)
   }
@@ -731,8 +729,8 @@ export class SceneWindow {
   #layout() {
     const view = this.#view
     const { width, height } = this.#size
-    const compactControls = Math.round(width * uiPixelsPerMetre) < compactControlsWidth
-    const controls = metres(compactControls ? 146 : 96)
+    this.#compactControls = Math.round(width * uiPixelsPerMetre) < compactControlsWidth
+    const controls = metres(this.#compactControls ? 146 : 96)
     this.group.position.set(view.x, view.y, view.z)
     place(this.#back, width, height, 0)
     place(this.#screen, width, height, 0)
@@ -745,7 +743,7 @@ export class SceneWindow {
     this.#returnButton.layout(metres(backWidth), metres(backHeight), height / 2 - backMargin - metres(backHeight) / 2)
     this.#returnButton.mesh.position.x = -width / 2 + backMargin + metres(backWidth) / 2
     this.#message.layout(view.media?.kind === 'audio' ? width : Math.min(width, metres(450)), metres(65), 0)
-    cutout(this.#screen, this.#message.mesh.scale.x, this.#message.mesh.scale.y, 0, 0)
+    cutout(this.#screen, this.#message.mesh.scale.x, this.#message.mesh.scale.y)
     this.#controls.layout(width, controls, -(height + controls) / 2 - chromeGap)
     for (const { x, y, horizontal, vertical } of this.#grips) {
       if (horizontal) {
@@ -788,7 +786,7 @@ export class SceneWindow {
       slider(ctx, seekX, seekY, seekWidth, fraction(media.time))
       if (view.loopStart) rect(ctx, seekX + seekWidth * fraction(view.loopStart), seekY - 8, strokeWidth, 16, uiColors.text)
       if (view.loopEnd !== null) rect(ctx, seekX + seekWidth * fraction(view.loopEnd), seekY - 8, strokeWidth, 16, uiColors.text)
-      const compact = width < compactControlsWidth
+      const compact = this.#compactControls
       const gap = compact ? 6 : 12
       const loopWidth = compact ? 40 : 58
       const iconWidth = 56
@@ -847,14 +845,14 @@ export class SceneWindow {
     const browser = !this.#showingMedia ? this.#browser : undefined
     const view = browser ? { ...this.#view, ...this.#size } : this.#view
     const orientation = this.group.quaternion.clone()
-    const height = viewHeight(view)
+    const { height } = view
     const offset = new Vector3()
     let lastWidth = view.width
     let lastHeight = height
     browser?.startResize()
     return xyDrag(hit.point, orientation, (dx, dy) => {
       const size = resizedDimensions(view, dx, dy, x, y, browser ? browserMinimum : limits)
-      const nextHeight = size.height ?? height
+      const nextHeight = size.height
       if (size.width === lastWidth && nextHeight === lastHeight) return
       lastWidth = size.width
       lastHeight = nextHeight

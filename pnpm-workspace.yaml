@@ -1,6 +1,5 @@
-# Preserve the imported versions until both are 24 hours old (2026-11-20 12:12 UTC).
+# Preserve the imported version until it is 24 hours old (2026-11-20 12:12 UTC).
 minimumReleaseAgeExclude:
-  - lucide-react@1.76.0
   - source-map-js@1.2.4
 patchedDependencies:
   three@0.187.0: patches/three@0.187.0.patch

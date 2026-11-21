@@ -1,9 +1,8 @@
-import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { mediaLibrary } from './server/media-library.ts'
 
 export default defineConfig({
-  plugins: [react(), mediaLibrary()],
+  plugins: [mediaLibrary()],
   server: {
     host: 'localhost',
     port: 5173,

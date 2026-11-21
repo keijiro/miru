@@ -13,8 +13,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 button:disabled { cursor: default; }
 button:focus-visible { outline: 1px solid var(--ui-accent); outline-offset: 3px; }
 button, a { -webkit-tap-highlight-color: transparent; }
-svg { flex: none; stroke-width: 1.25; }
+svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; }
 h1, p { margin: 0; }
+[hidden] { display: none !important; }
 
 .app { position: relative; height: 100vh; height: 100dvh; overflow: hidden; }
 .stage { position: relative; height: 100%; }

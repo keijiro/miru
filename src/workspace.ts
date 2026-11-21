@@ -25,8 +25,7 @@ export interface View {
   y: number
   z: number
   width: number
-  // Derive the height from the media until the view is resized.
-  height?: number
+  height: number
   aspect: number
   panX: number
   panY: number
@@ -68,15 +67,13 @@ interface MediaState {
   duration: number
   time: number
   playing: boolean
-  error: string
+  failed: boolean
 }
 
 const defaultCamera: Camera = { x: 0, y: 0, z: 0 }
-const blankMedia: MediaState = { ready: false, duration: 0, time: 0, playing: false, error: '' }
-const oldSampleFolder = String.fromCodePoint(0x30d5, 0x30a3, 0x30fc, 0x30eb, 0x30c9, 0x30ce, 0x30fc, 0x30c8)
+const blankMedia: MediaState = { ready: false, duration: 0, time: 0, playing: false, failed: false }
 
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
-export const viewHeight = (view: View) => view.height ?? view.width / clamp(view.aspect, minAutoAspect, maxAutoAspect)
 export const filterMedia = (listing: DirectoryListing) => listing.entries.filter(entry => entry.kind !== 'folder')
 
 function finite(value: unknown, fallback: number, min: number, max: number) {
@@ -87,10 +84,7 @@ function restore(key: string) {
   try {
     const data: unknown = JSON.parse(localStorage.getItem(key) ?? 'null')
     if (data && typeof data === 'object') {
-      return data as Partial<Omit<Layout, 'camera'>> & {
-        camera?: Partial<Camera> & { zoom?: number } | null
-        directory?: string
-      }
+      return data as Partial<Layout>
     }
   } catch {
     // Unavailable storage and older or damaged snapshots are handled at startup.
@@ -98,32 +92,25 @@ function restore(key: string) {
   return null
 }
 
-function restoreSamplePath(path: string) {
-  // Migrate paths saved before the bundled folder was renamed to Field Notes.
-  return path === oldSampleFolder || path.startsWith(oldSampleFolder + '/')
-    ? 'Field Notes' + path.slice(oldSampleFolder.length)
-    : path
-}
-
-function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: string): View | undefined {
+function restoreView(view: SavedView, browser: BrowserState): View | undefined {
   if (!view || typeof view.id !== 'string') return
   const { media } = view
   if (media !== null && (!media || typeof media.path !== 'string' || typeof media.name !== 'string'
     || typeof media.version !== 'string' || !['image', 'video', 'audio'].includes(media.kind))) return
-  const directory = typeof view.directory === 'string' ? view.directory : legacyDirectory
-  const samples = browser.listing.samples
+  const width = finite(view.width, windowDefaults.width, limits.minWidth, limits.maxWidth)
+  const aspect = finite(view.aspect, 16 / 9, 0.01, 100)
+  const defaultHeight = media ? width / clamp(aspect, minAutoAspect, maxAutoAspect) : windowDefaults.height
   return {
     id: view.id,
-    media: samples && media ? { ...media, path: restoreSamplePath(media.path) } : media,
-    directory: samples ? restoreSamplePath(directory) : directory,
+    media,
+    directory: typeof view.directory === 'string' ? view.directory : '',
     browser,
     x: finite(view.x, 0, -100, 100),
     y: finite(view.y, 0, -100, 100),
     z: finite(view.z, -windowDefaults.depth, -limits.far, limits.far),
-    width: finite(view.width, windowDefaults.width, limits.minWidth, limits.maxWidth),
-    height: typeof view.height === 'number' && Number.isFinite(view.height)
-      ? clamp(view.height, limits.minHeight, limits.maxHeight) : media ? undefined : windowDefaults.height,
-    aspect: finite(view.aspect, 16 / 9, 0.01, 100),
+    width,
+    height: finite(view.height, defaultHeight, limits.minHeight, limits.maxHeight),
+    aspect,
     panX: finite(view.panX, 0, -1, 1),
     panY: finite(view.panY, 0, -1, 1),
     controls: media !== null && media.kind !== 'image' && view.controls === true,
@@ -144,20 +131,17 @@ export function resizedDimensions(
   view: View, dx: number, dy: number, xSide: number, ySide: number,
   minimum: Pick<typeof limits, 'minWidth' | 'minHeight'> = limits,
 ) {
-  const originalHeight = viewHeight(view)
-  const width = clamp(view.width + dx * xSide, minimum.minWidth, limits.maxWidth)
-  const height = clamp(originalHeight + dy * ySide, minimum.minHeight, limits.maxHeight)
   return {
-    width,
-    height: width === view.width && height === originalHeight ? view.height : height,
+    width: clamp(view.width + dx * xSide, minimum.minWidth, limits.maxWidth),
+    height: clamp(view.height + dy * ySide, minimum.minHeight, limits.maxHeight),
   }
 }
 
 export function mediaOverflow(view: View) {
-  const height = viewHeight(view)
-  const ratio = view.aspect / (view.width / height)
+  const { aspect, width, height } = view
+  const ratio = aspect / (width / height)
   return {
-    x: Math.max(0, view.width * (ratio - 1)),
+    x: Math.max(0, width * (ratio - 1)),
     y: Math.max(0, height * (1 / ratio - 1)),
   }
 }
@@ -201,8 +185,6 @@ export class MediaRuntime {
     const options = { signal: this.#abort.signal }
     if (media.kind === 'image') {
       const image = this.image = new Image()
-      image.alt = media.name
-      image.draggable = false
       image.decoding = 'async'
       image.addEventListener('load', () => {
         this.update({ aspect: image.naturalWidth / image.naturalHeight })
@@ -412,10 +394,7 @@ export class MediaRuntime {
     this.#loopFrameTime = time
   }
 
-  #fail = () => this.#publish({
-    ready: false, playing: false,
-    error: 'Could not open the file. Check its location and whether your browser supports the format.',
-  })
+  #fail = () => this.#publish({ ready: false, playing: false, failed: true })
 
   #publish(patch: Partial<MediaState>) {
     this.#state = { ...this.#state, ...patch }
@@ -435,21 +414,19 @@ export class Workspace {
     this.#key = `miru.workspace.v1.${listing.rootId}`
     this.#root = { listing, busy: false, error: '' }
     const saved = restore(this.#key)
-    const legacyDirectory = typeof saved?.directory === 'string' ? saved.directory : ''
     const views = Array.isArray(saved?.views)
-      ? saved.views.map(view => restoreView(view, this.#root, legacyDirectory)).filter(view => view !== undefined)
+      ? saved.views.map(view => restoreView(view, this.#root)).filter(view => view !== undefined)
       : []
     const selected = views.find(view => view.id === saved?.selected)?.id ?? null
     const panorama = views.find(view => view.id === saved?.panorama && view.media?.kind === 'video')?.id ?? null
-    const camera = saved?.camera
-    // Reframe legacy layouts that used Fit all with a shifted projection.
-    const legacyFit = camera && camera.z === undefined && (camera.x !== 0 || camera.y !== 0 || camera.zoom !== 1)
+    const camera = views.length ? saved?.camera : undefined
+    const restoredCamera = camera && Number.isFinite(camera.z) ? {
+      x: finite(camera.x, 0, -100, 100),
+      y: finite(camera.y, 0, -100, 100),
+      z: clamp(camera.z, -limits.far, 100_000),
+    } : defaultCamera
     this.#state = {
-      camera: views.length && (camera === null || legacyFit) ? null : camera && views.length ? {
-        x: finite(camera.x, 0, -100, 100),
-        y: finite(camera.y, 0, -100, 100),
-        z: finite(camera.z, 0, -limits.far, 100_000),
-      } : defaultCamera,
+      camera: camera === null ? null : restoredCamera,
       views, selected, panorama, storageError: false,
     }
 
@@ -517,7 +494,7 @@ export class Workspace {
     if (!view || view.media) return
     this.#cancelNavigation(id)
     const patch = {
-      ...mediaDefaults, media, height: viewHeight(view), directory: view.browser.listing.path,
+      ...mediaDefaults, media, directory: view.browser.listing.path,
       browser: { ...view.browser, busy: false, error: '' },
     }
     this.#createRuntime({ ...view, ...patch })
@@ -530,7 +507,7 @@ export class Workspace {
     const view = this.#state.views.find(item => item.id === id)
     if (!view?.media) return
     this.#disposeRuntime(id)
-    this.patch(id, { media: null, height: viewHeight(view), controls: false })
+    this.patch(id, { media: null, controls: false })
     if (view.directory !== view.browser.listing.path) void this.navigate(id, view.directory)
   }
 
