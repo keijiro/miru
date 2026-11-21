@@ -54,6 +54,7 @@ interface Camera {
 interface Layout {
   views: SavedView[]
   selected: string | null
+  panorama: string | null
   camera: Camera | null
 }
 
@@ -360,6 +361,7 @@ export class Workspace {
       ? saved.views.map(view => restoreView(view, this.#root, legacyDirectory)).filter(view => view !== undefined)
       : []
     const selected = views.find(view => view.id === saved?.selected)?.id ?? null
+    const panorama = views.find(view => view.id === saved?.panorama && view.media?.kind === 'video')?.id ?? null
     const camera = saved?.camera
     // Reframe legacy layouts that used Fit all with a shifted projection.
     const legacyFit = camera && camera.z === undefined && (camera.x !== 0 || camera.y !== 0 || camera.zoom !== 1)
@@ -369,7 +371,7 @@ export class Workspace {
         y: finite(camera.y, 0, -100, 100),
         z: finite(camera.z, 0, -limits.far, 100_000),
       } : defaultCamera,
-      views, selected, storageError: false,
+      views, selected, panorama, storageError: false,
     }
 
     // Use current revisions for items already available in the initial directory.
@@ -457,11 +459,18 @@ export class Workspace {
     this.#cancelNavigation(id)
     this.#disposeRuntime(id)
     const selected = this.#state.selected === id ? views.at(-1)?.id ?? null : this.#state.selected
-    this.#publish({ views, selected, camera: views.length ? this.#state.camera : defaultCamera }, true)
+    const panorama = this.#state.panorama === id ? null : this.#state.panorama
+    this.#publish({ views, selected, panorama, camera: views.length ? this.#state.camera : defaultCamera }, true)
   }
 
   select(id: string | null) {
     if (this.#state.selected !== id) this.#publish({ selected: id }, true)
+  }
+
+  togglePanorama(id: string) {
+    const runtime = this.runtime(id)
+    if (!runtime?.video || !runtime.snapshot().ready) return
+    this.#publish({ panorama: this.#state.panorama === id ? null : id }, true)
   }
 
   patch(id: string, patch: Partial<View>, save = true) {
@@ -469,7 +478,8 @@ export class Workspace {
     if (!current) return
     const updated = { ...current, ...patch }
     this.runtime(id)?.apply(updated)
-    this.#publish({ views: this.#state.views.map(view => view === current ? updated : view) }, save)
+    const panorama = this.#state.panorama === id && updated.media?.kind !== 'video' ? null : this.#state.panorama
+    this.#publish({ views: this.#state.views.map(view => view === current ? updated : view), panorama }, save)
   }
 
   depth(id: string, distance: number, cameraZ: number) {
@@ -487,10 +497,10 @@ export class Workspace {
   save = () => {
     window.clearTimeout(this.#saveTimer)
     this.#saveTimer = undefined
-    const { views, selected, camera } = this.#state
+    const { views, selected, panorama, camera } = this.#state
     const savedViews = views.map(({ browser, ...view }) => view)
     try {
-      localStorage.setItem(this.#key, JSON.stringify({ views: savedViews, selected, camera } satisfies Layout))
+      localStorage.setItem(this.#key, JSON.stringify({ views: savedViews, selected, panorama, camera } satisfies Layout))
       if (this.#state.storageError) this.#publish({ storageError: false })
     } catch {
       if (!this.#state.storageError) this.#publish({ storageError: true })

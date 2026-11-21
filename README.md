@@ -51,6 +51,7 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 | Adjust depth | Hold `Alt` and scroll over the view. |
 | Resize a view | Hover near any corner and drag the handle that appears. |
 | Show video controls | Click the video in the view. |
+| Toggle the panorama background | Select **180° Panorama** in the video controls, or **Panorama** in a narrow window. |
 | Pan cropped media | Drag the image or video along the cropped axis. |
 | Loop a section of a video | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
 | Fit all views on screen | Click **Fit all** at the top of the workspace. |
@@ -58,6 +59,8 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 Hover near a move bar, resize handle, or **Back** to reveal all available controls of this kind on that window. The control under the pointer is highlighted.
 
 Images and videos fill their views while keeping their aspect ratio. miru automatically saves open windows, their position, size, depth, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, videos seek to their loop start. When you first open a video, it starts muted so the browser can autoplay it.
+
+Panorama projection expects a 180° equirectangular video packed side by side, with the left eye first. In VR, the panorama centers on your heading when you enable it and stays in place as you look around. On desktop, it shows the left-eye image facing forward. The background and source window share playback, including pause, seek, and loops. Enabling another video switches the background to that video. Use **Back** in the source window to clear the projection, or toggle **180° Panorama** off.
 
 ## WSL2 and Quest Pro
 

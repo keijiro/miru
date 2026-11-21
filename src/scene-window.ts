@@ -42,7 +42,7 @@ const browserMinimum = {
 
 const seekX = 25
 const seekY = 22
-const compactControlsWidth = 570
+const compactControlsWidth = 690
 
 export type Face = Mesh<PlaneGeometry, MeshBasicMaterial>
 export type Hit = Intersection<Face>
@@ -340,6 +340,9 @@ export class SceneWindow {
 
   get id() { return this.#view.id }
   get runtime() { return this.#runtime }
+  get videoTexture() {
+    return this.#media.visible && this.#texture instanceof VideoTexture ? this.#texture : undefined
+  }
 
   get radius() {
     const { width, height } = this.#size
@@ -524,8 +527,10 @@ export class SceneWindow {
     const media = runtime.snapshot()
     const panel = this.#controls
     const { width } = panel
+    const panorama = this.workspace.snapshot().panorama === view.id
     const signature = JSON.stringify([
       width, view.loopStart, view.loopEnd, view.muted, media.duration, Math.floor(media.time * 10), media.playing,
+      media.ready, panorama,
     ])
     if (signature === this.#lastControls) return
     this.#lastControls = signature
@@ -536,18 +541,24 @@ export class SceneWindow {
       if (view.loopStart) rect(ctx, seekX + seekWidth * fraction(view.loopStart), seekY - 8, strokeWidth, 16, uiColors.text)
       if (view.loopEnd !== null) rect(ctx, seekX + seekWidth * fraction(view.loopEnd), seekY - 8, strokeWidth, 16, uiColors.text)
       const compact = width < compactControlsWidth
-      const gap = compact ? 6 : 15
-      const muteX = width - (compact ? 6 : 25) - 130
-      const endX = muteX - gap - 77
-      const startX = endX - gap - 77
+      const gap = compact ? 6 : 12
+      const loopWidth = compact ? 40 : 58
+      const muteWidth = compact ? 80 : 98
+      const panoramaWidth = compact ? 116 : 165
+      const panoramaX = width - (compact ? 6 : 25) - panoramaWidth
+      const muteX = panoramaX - gap - muteWidth
+      const endX = muteX - gap - loopWidth
+      const startX = endX - gap - loopWidth
       const loopY = compact ? 91 : 40
       panel.button(media.playing ? 'Ⅱ' : '▷', 19, 40, 64, 43, () => runtime.togglePlayback(), false, 'playback')
       text(ctx, `${formatTime(media.time)} / ${formatTime(media.duration)}`, 98, 62, 21, uiColors.muted,
         (compact ? width - 16 : startX - 12) - 98)
-      panel.button('[ A', startX, loopY, 77, 43, () => runtime.mark('start'), view.loopStart > 0)
-      panel.button('B ]', endX, loopY, 77, 43, () => runtime.mark('end'), view.loopEnd !== null)
-      panel.button(view.muted ? 'Unmute' : 'Mute', muteX, loopY, 130, 43,
+      panel.button('[ A', startX, loopY, loopWidth, 43, () => runtime.mark('start'), view.loopStart > 0)
+      panel.button('B ]', endX, loopY, loopWidth, 43, () => runtime.mark('end'), view.loopEnd !== null)
+      panel.button(view.muted ? 'Unmute' : 'Mute', muteX, loopY, muteWidth, 43,
         () => this.workspace.patch(view.id, { muted: !view.muted }), !view.muted, 'audio')
+      if (media.ready) panel.button(compact ? 'Panorama' : '180° Panorama', panoramaX, loopY, panoramaWidth, 43,
+        () => this.workspace.togglePanorama(view.id), panorama)
     })
   }
 

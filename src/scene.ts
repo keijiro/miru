@@ -3,6 +3,7 @@ import {
   Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
   SphereGeometry, Vector2, Vector3, WebGLRenderer, type Ray, type XRTargetRaySpace,
 } from 'three'
+import { Panorama } from './panorama'
 import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
 import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
@@ -36,8 +37,11 @@ export class WorkspaceScene {
   #xrCamera = new PerspectiveCamera(cameraFov, 1, 0.04, 80)
   #desktopCamera = this.#xrCamera.clone()
   #headPosition = new Vector3()
+  #headForward = new Vector3()
+  #headYaw = 0
   #needsDesktopFit = true
   #floor = new GridHelper(70, 70, uiColors.active, uiColors.control)
+  #panorama = new Panorama(this.#scene)
   #windows = new Map<string, SceneWindow>()
   #pointers: Pointer[]
   #raycaster = new Raycaster()
@@ -58,6 +62,7 @@ export class WorkspaceScene {
     this.#renderer = new WebGLRenderer({ canvas, context })
     this.#renderer.xr.enabled = true
     this.#renderer.xr.setReferenceSpaceType('local')
+    this.#desktopCamera.layers.enable(1) // Show the left half of the panorama on desktop.
     canvas.setAttribute('aria-label', 'Media workspace')
     container.append(canvas)
     this.#resize = new ResizeObserver(([entry]) => {
@@ -88,6 +93,7 @@ export class WorkspaceScene {
     this.#mouseLeave()
     this.#previousFrame = 0
     this.#headPosition.set(0, 0, 0)
+    this.#headYaw = 0
     this.#needsDesktopFit = true
     await this.#renderer.xr.setSession(session)
   }
@@ -122,6 +128,7 @@ export class WorkspaceScene {
     this.#finishMouse(false)
     this.#events.abort()
     this.#resize.disconnect()
+    this.#panorama.dispose()
     for (const panel of this.#windows.values()) panel.dispose()
     for (const pointer of this.#pointers) {
       this.#resetPointer(pointer)
@@ -387,6 +394,8 @@ export class WorkspaceScene {
       if (pose) {
         const { x, y, z } = pose.transform.position
         this.#headPosition.set(x, y, z)
+        const forward = this.#headForward.set(0, 0, -1).applyQuaternion(pose.transform.orientation)
+        if (Math.hypot(forward.x, forward.z) > 0.001) this.#headYaw = Math.atan2(-forward.x, -forward.z)
       }
     }
     if (!immersive) this.#updateDesktopCamera()
@@ -403,6 +412,10 @@ export class WorkspaceScene {
     }
     if (!immersive) this.#updateMouseHover()
     for (const panel of this.#windows.values()) panel.updateAffordances()
+    const { panorama } = this.workspace.snapshot()
+    const texture = panorama === null ? undefined : this.#windows.get(panorama)?.videoTexture
+    this.#panorama.sync(texture, immersive ? this.#headYaw : null)
+    this.#floor.visible = !texture
     this.#renderer.render(this.#scene, immersive ? this.#xrCamera : this.#desktopCamera)
   }
 
