@@ -8,3 +8,5 @@ dist/
 .env.*
 !.env.example
 npm-debug.log*
+
+/samples/Extras
