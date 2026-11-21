@@ -416,11 +416,17 @@ export class SceneWindow {
       return
     }
     const media = runtime.snapshot()
-    if (media.ready && !nativeVideo && !this.#texture) {
-      this.#setMediaTexture(runtime.video ? new VideoTexture(runtime.video) : new Texture(runtime.element))
+    if (view.media?.kind === 'audio') {
+      this.#media.visible = false
+      this.#showMessage(media.error ? 'Could not play the file' : view.media.name, !media.error)
+    } else {
+      if (media.ready && !nativeVideo && !this.#texture) {
+        if (runtime.video) this.#setMediaTexture(new VideoTexture(runtime.video))
+        else if (runtime.image) this.#setMediaTexture(new Texture(runtime.image))
+      }
+      this.#media.visible = (nativeVideo ? media.ready : Boolean(this.#texture)) && !media.error
+      this.#showMessage(media.error ? 'Could not display the file' : this.#media.visible ? '' : 'Loading…')
     }
-    this.#media.visible = (nativeVideo ? media.ready : Boolean(this.#texture)) && !media.error
-    this.#showMessage(media.error ? 'Could not display the file' : this.#media.visible ? '' : 'Loading…')
     if (this.#controls.mesh.visible) this.#paintControls(runtime)
   }
 
@@ -432,16 +438,17 @@ export class SceneWindow {
     this.#media.material.needsUpdate = true
   }
 
-  #showMessage(message: string) {
+  #showMessage(message: string, fileName = false) {
     this.#screen.visible = this.#message.mesh.visible = Boolean(message)
     if (!message) return
     const messageWidth = this.#message.width
-    const messageSignature = `${messageWidth}:${message}`
+    const messageSignature = `${messageWidth}:${fileName}:${message}`
     if (messageSignature === this.#lastMessage) return
     this.#lastMessage = messageSignature
     this.#message.paint(ctx => {
       ctx.textAlign = 'center'
-      text(ctx, message, messageWidth / 2, 33, 23, uiColors.muted, messageWidth - 16)
+      text(ctx, message, messageWidth / 2, this.#message.height / 2,
+        fileName ? 28 : 23, fileName ? uiColors.text : uiColors.muted, messageWidth - (fileName ? 48 : 16))
       ctx.textAlign = 'left'
     })
   }
@@ -536,10 +543,10 @@ export class SceneWindow {
     place(this.#hitbox, width + windowGripReach * 2, height + windowGripReach * 2, 0)
     this.#returnButton.layout(metres(backWidth), metres(backHeight), height / 2 - backMargin - metres(backHeight) / 2)
     this.#returnButton.mesh.position.x = -width / 2 + backMargin + metres(backWidth) / 2
-    this.#message.layout(Math.min(width, metres(450)), metres(65), 0)
+    this.#message.layout(view.media?.kind === 'audio' ? width : Math.min(width, metres(450)), metres(65), 0)
     cutout(this.#screen, this.#message.mesh.scale.x, this.#message.mesh.scale.y, 0, 0)
     this.#controls.layout(width, controls, -(height + controls) / 2 - chromeGap)
-    this.#controls.mesh.visible = Boolean(this.#runtime?.video) && view.controls
+    this.#controls.mesh.visible = Boolean(this.#runtime?.playback) && view.controls
     for (const { x, y, horizontal, vertical } of this.#grips) {
       if (horizontal) {
         const length = x ? cornerHandleLength : width - 2 * cornerLength
@@ -560,7 +567,8 @@ export class SceneWindow {
     const media = runtime.snapshot()
     const panel = this.#controls
     const { width } = panel
-    const panorama = this.workspace.snapshot().panorama === view.id
+    const video = Boolean(runtime.video)
+    const panorama = video && this.workspace.snapshot().panorama === view.id
     const signature = JSON.stringify([
       width, view.loopStart, view.loopEnd, view.muted, media.duration, Math.floor(media.time * 10), media.playing,
       media.ready, panorama,
@@ -578,8 +586,9 @@ export class SceneWindow {
       const loopWidth = compact ? 40 : 58
       const muteWidth = compact ? 80 : 98
       const panoramaWidth = compact ? 116 : 165
-      const panoramaX = width - (compact ? 6 : 25) - panoramaWidth
-      const muteX = panoramaX - gap - muteWidth
+      const right = width - (compact ? 6 : 25)
+      const panoramaX = right - panoramaWidth
+      const muteX = (video ? panoramaX - gap : right) - muteWidth
       const endX = muteX - gap - loopWidth
       const startX = endX - gap - loopWidth
       const loopY = compact ? 91 : 40
@@ -590,7 +599,7 @@ export class SceneWindow {
       panel.button('B ]', endX, loopY, loopWidth, 43, () => runtime.mark('end'), view.loopEnd !== null)
       panel.button(view.muted ? 'Unmute' : 'Mute', muteX, loopY, muteWidth, 43,
         () => this.workspace.patch(view.id, { muted: !view.muted }), !view.muted, 'audio')
-      if (media.ready) panel.button(compact ? 'Panorama' : '180° Panorama', panoramaX, loopY, panoramaWidth, 43,
+      if (video && media.ready) panel.button(compact ? 'Panorama' : '180° Panorama', panoramaX, loopY, panoramaWidth, 43,
         () => this.workspace.togglePanorama(view.id), panorama)
     })
   }
@@ -654,20 +663,20 @@ export class SceneWindow {
     const runtime = this.#runtime
     if (!runtime) return
     const overflow = mediaOverflow(view)
-    const canPan = runtime.snapshot().ready && (overflow.x > 0 || overflow.y > 0)
-    if (!canPan && !runtime.video) return
+    const canPan = (runtime.image || runtime.video) && runtime.snapshot().ready && (overflow.x > 0 || overflow.y > 0)
+    if (!canPan && !runtime.playback) return
     return xyDrag(hit.point, this.group.quaternion, (dx, dy) => {
       if (!canPan) return
       const pan = panned(view, dx, dy)
       if (pan.panX !== this.#view.panX || pan.panY !== this.#view.panY) this.workspace.patch(view.id, pan)
     }, Math.min(0.022, view.width * 0.035), moved => {
-      if (!moved && runtime.video) this.workspace.patch(view.id, { controls: !view.controls })
+      if (!moved && runtime.playback) this.workspace.patch(view.id, { controls: !view.controls })
     })
   }
 
   #control(hit: Hit, ray: Ray) {
     const runtime = this.#runtime
-    if (!runtime?.video) return
+    if (!runtime?.playback) return
     const panel = this.#controls
     const { width, height } = panel
     const x = hit.uv!.x * width
@@ -812,6 +821,13 @@ class FileBrowser {
       this.#panel.action(x, y, cardSize, cardSize, () => void this.workspace.navigate(this.id, item.path), key)
       return
     }
+    this.#panel.action(x, y, cardSize, cardSize, () => this.workspace.open(this.id, item), key)
+    if (item.kind === 'audio') {
+      ctx.textAlign = 'center'
+      text(ctx, '♪', x + cardSize / 2, y + (cardSize - 26) / 2, 48, uiColors.muted)
+      ctx.textAlign = 'left'
+      return
+    }
     let image = this.#images.get(item.path)
     if (!image) {
       image = new Image()
@@ -829,6 +845,5 @@ class FileBrowser {
       ctx.drawImage(image, x + 8 + (destW - w) / 2, y + 8 + (destH - h) / 2, w, h)
     }
     if (item.kind === 'video') flatButton(ctx, '▷', x + cardSize - 52, y + destH - 30, 36, 30, uiColors.control)
-    this.#panel.action(x, y, cardSize, cardSize, () => this.workspace.open(this.id, item), key)
   }
 }

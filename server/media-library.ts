@@ -15,7 +15,7 @@ const sampleRoot = resolve(project, 'samples')
 const run = promisify(execFile)
 const sorted = new Intl.Collator('en', { numeric: true })
 
-const formats: Record<string, [MediaKind, string]> = {
+const formats: Partial<Record<string, [MediaKind, string]>> = {
   '.jpg': ['image', 'image/jpeg'],
   '.jpeg': ['image', 'image/jpeg'],
   '.png': ['image', 'image/png'],
@@ -28,6 +28,15 @@ const formats: Record<string, [MediaKind, string]> = {
   '.webm': ['video', 'video/webm'],
   '.ogv': ['video', 'video/ogg'],
   '.mov': ['video', 'video/quicktime'],
+  '.wav': ['audio', 'audio/wav'],
+  '.mp3': ['audio', 'audio/mpeg'],
+  '.m4a': ['audio', 'audio/mp4'],
+  '.aac': ['audio', 'audio/aac'],
+  '.flac': ['audio', 'audio/flac'],
+  '.ogg': ['audio', 'audio/ogg'],
+  '.oga': ['audio', 'audio/ogg'],
+  '.opus': ['audio', 'audio/ogg'],
+  '.weba': ['audio', 'audio/webm'],
 }
 
 class HttpError extends Error {
@@ -170,7 +179,7 @@ class Thumbnails {
   #queue: (() => void)[] = []
   #inflight = new Map<string, Promise<void>>()
 
-  async get(cache: string, file: string, revision: string, kind: MediaKind) {
+  async get(cache: string, file: string, revision: string, kind: 'image' | 'video') {
     const output = resolve(cache, `${hash(`midpoint-jpeg-v2\0${file}\0${revision}`)}.jpg`)
     if (!(await stat(output).catch(() => null))?.size) {
       let pending = this.#inflight.get(output)
@@ -183,7 +192,7 @@ class Thumbnails {
     return { output, info: await stat(output) }
   }
 
-  async #generate(file: string, output: string, kind: MediaKind) {
+  async #generate(file: string, output: string, kind: 'image' | 'video') {
     if (this.#active < 3) this.#active++
     else await new Promise<void>(ready => this.#queue.push(ready))
     const temp = `${output}.${randomUUID()}.tmp.jpg`
@@ -263,7 +272,7 @@ export function mediaLibrary(): Plugin {
         serveFile(request, response, file, info, format[1], 'private, no-cache')
         return
       }
-      if (url.pathname === '/api/miru/thumbnail') {
+      if (url.pathname === '/api/miru/thumbnail' && format[0] !== 'audio') {
         const revision = version(info)
         const { output, info: thumbnail } = await thumbnails.get(config.cache, file, revision, format[0])
         const policy = url.searchParams.get('v') === revision ? 'private, max-age=31536000, immutable' : 'private, no-cache'

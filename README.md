@@ -1,6 +1,6 @@
 # miru
 
-miru is a local media viewer for arranging and viewing multiple images and videos in one space. It is designed for WebXR and has a desktop fallback that uses the same WebGL 2 workspace.
+miru is a local media viewer for arranging images, videos, and audio in one space. It is designed for WebXR and has a desktop fallback that uses the same WebGL 2 workspace.
 
 See the [UI design guidelines](UI-DESIGN.md) for the shared desktop and VR styles and interaction rules.
 
@@ -32,9 +32,9 @@ Set the media folder and thumbnail cache paths in `miru.config.json`. Relative p
 
 The example uses a folder on the Windows D drive from WSL2. On macOS, you can use a path such as `/Users/yourname/Movies` or `/Volumes/Media`. The file browser lists regular files and folders.
 
-The file browser fits each thumbnail inside a square file tile. miru generates thumbnails on first access. Video thumbnails use a frame near the midpoint, with the first frame as a fallback. Thumbnails are regenerated when their source files change. If you delete the cache folder, miru recreates it on the next access.
+The file browser fits each thumbnail inside a square file tile and marks audio files with a music note. miru generates image and video thumbnails on first access. Video thumbnails use a frame near the midpoint, with the first frame as a fallback. Thumbnails are regenerated when their source files change. If you delete the cache folder, miru recreates it on the next access.
 
-The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP4, M4V, WebM, OGV, and MOV videos. Playback depends on the codecs your browser supports.
+The file browser lists JPEG, PNG, WebP, AVIF, BMP, and GIF images, as well as MP4, M4V, WebM, OGV, and MOV videos. Audio extensions include `.wav`, `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.oga`, `.opus`, and `.weba`. Playback depends on the codecs your browser supports.
 
 ## Desktop controls
 
@@ -43,22 +43,22 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 | Action | How to |
 | --- | --- |
 | Open a window | Press and hold in empty space for one second. A window outline and a circular progress indicator show where it will open. |
-| View a file | Select an image or video in the window's file browser. |
+| Open a file | Select a file in the window's file browser. |
 | Browse a folder | Select a folder tile. Use **Previous** and **Next** to change pages, or select the **Up** tile to open the parent folder. |
 | Return to the file browser | Hover near the upper-left corner inside the media window to reveal **Back**, then click it. |
 | Close a window | Click **Close** in the file browser. |
 | Move a view | Hover near any edge and drag the bar that appears. |
 | Adjust depth | Hold `Alt` and scroll over the view. |
 | Resize a view | Hover near any corner and drag the handle that appears. |
-| Show video controls | Click the video in the view. |
+| Show playback controls | Click inside an audio or video window. |
 | Toggle the panorama background | Select **180° Panorama** in the video controls, or **Panorama** in a narrow window. |
 | Pan cropped media | Drag the image or video along the cropped axis. |
-| Loop a section of a video | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
+| Loop a section of an audio or video file | Seek to each point and click `[ A` to set the start or `B ]` to set the end. |
 | Fit all views on screen | Click **Fit all** at the top of the workspace. |
 
 Hover near a move bar, resize handle, or **Back** to reveal all available controls of this kind on that window. The control under the pointer is highlighted.
 
-Images and videos fill their views while keeping their aspect ratio. miru automatically saves open windows, their position, size, depth, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, videos seek to their loop start. When you first open a video, it starts muted so the browser can autoplay it.
+Images and videos fill their views while keeping their aspect ratio. Audio windows show the file name in the center. miru automatically saves open windows, their position, size, depth, current folder, and any active media settings. Each window remembers its own folder when you return to the file browser. On startup, audio and video seek to their saved loop start. Newly opened audio and video files start muted. Select **Unmute** to hear the audio, and press Play if the browser blocks autoplay.
 
 Panorama projection expects a 180° equirectangular video packed side by side, with the left eye first. In VR, the panorama centers on your heading when you enable it and stays in place as you look around. On desktop, it shows the left-eye image facing forward. The background and source window share playback, including pause, seek, and loops. Enabling another video switches the background to that video. Use **Back** in the source window to clear the projection, or toggle **180° Panorama** off.
 
@@ -70,7 +70,7 @@ Start the server in WSL2 and open `http://localhost:5173` in Chrome on the same 
 
 In VR, aim at empty space and hold the controller trigger for one second to open a file browser. The window outline and circular progress indicator appear where the cursor was when you first pressed the trigger, about 1 m from the controller. Windows turn to face the headset as you move. Aim near any edge and hold the trigger on the bar that appears to move the window. Tilt the thumbstick up or down while holding the trigger to adjust the distance. Aim near a corner and grab its handle to resize.
 
-Use the trigger to select a file. Aim inside the upper-left corner of the media window to reveal **Back**, then select it to return to the file's folder. Select **Close** in the file browser to close the window. Hold the trigger on an image or video and drag along the cropped axis to pan. Tap the trigger on a video to show its playback controls. Text, buttons, and thumbnails keep their size as you resize. A wider file browser fits more columns, and a taller one fits more rows. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
+Use the trigger to select a file. Aim inside the upper-left corner of the media window to reveal **Back**, then select it to return to the file's folder. Select **Close** in the file browser to close the window. Hold the trigger on an image or video and drag along the cropped axis to pan. Tap the trigger inside an audio or video window to show its playback controls. Text, buttons, and thumbnails keep their size as you resize. A wider file browser fits more columns, and a taller one fits more rows. Select **Exit VR** in a file browser window or use the desktop switch to end the session.
 
 WebXR support is implemented. The Quest Pro, Virtual Desktop, and Windows Chrome setup still needs hardware testing.
 

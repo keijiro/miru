@@ -1,4 +1,4 @@
-export type MediaKind = 'image' | 'video'
+export type MediaKind = 'image' | 'video' | 'audio'
 
 export interface MediaEntry {
   kind: MediaKind

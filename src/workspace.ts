@@ -109,7 +109,7 @@ function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: st
   if (!view || typeof view.id !== 'string') return
   const { media } = view
   if (media !== null && (!media || typeof media.path !== 'string' || typeof media.name !== 'string'
-    || typeof media.version !== 'string' || (media.kind !== 'video' && media.kind !== 'image'))) return
+    || typeof media.version !== 'string' || !['image', 'video', 'audio'].includes(media.kind))) return
   const directory = typeof view.directory === 'string' ? view.directory : legacyDirectory
   const samples = browser.listing.samples
   return {
@@ -126,7 +126,7 @@ function restoreView(view: SavedView, browser: BrowserState, legacyDirectory: st
     aspect: finite(view.aspect, 16 / 9, 0.01, 100),
     panX: finite(view.panX, 0, -1, 1),
     panY: finite(view.panY, 0, -1, 1),
-    controls: media?.kind === 'video' && view.controls === true,
+    controls: media !== null && media.kind !== 'image' && view.controls === true,
     paused: view.paused === true,
     muted: view.muted !== false,
     loopStart: finite(view.loopStart, 0, 0, Number.MAX_SAFE_INTEGER),
@@ -182,12 +182,14 @@ export function formatTime(seconds: number) {
 }
 
 export class MediaRuntime {
-  readonly element: HTMLImageElement | HTMLVideoElement
+  readonly image?: HTMLImageElement
   readonly video?: HTMLVideoElement
+  readonly playback?: HTMLMediaElement
   #state = blankMedia
   #view: View
   #abort = new AbortController()
   #frame?: number
+  #audioLoopTimer?: number
   #previousTime = 0
   #playRequested = false
   #captureLoopFrames = false
@@ -198,8 +200,7 @@ export class MediaRuntime {
     this.#view = view
     const options = { signal: this.#abort.signal }
     if (media.kind === 'image') {
-      const image = new Image()
-      this.element = image
+      const image = this.image = new Image()
       image.alt = media.name
       image.draggable = false
       image.decoding = 'async'
@@ -212,19 +213,21 @@ export class MediaRuntime {
       return
     }
 
-    const video = document.createElement('video')
-    this.element = this.video = video
-    video.playsInline = true
-    video.preload = 'auto'
-    video.muted = view.muted
-    video.loop = view.loopStart === 0 && view.loopEnd === null
-    video.disablePictureInPicture = true
-    video.addEventListener('loadedmetadata', () => {
-      const duration = normalizedTime(video.duration)
+    const video = this.video = media.kind === 'video' ? document.createElement('video') : undefined
+    if (video) {
+      video.playsInline = true
+      video.disablePictureInPicture = true
+    }
+    const playback = this.playback = video ?? document.createElement('audio')
+    playback.preload = 'auto'
+    playback.muted = view.muted
+    playback.loop = view.loopStart === 0 && view.loopEnd === null
+    playback.addEventListener('loadedmetadata', () => {
+      const duration = normalizedTime(playback.duration)
       const start = clamp(this.#view.loopStart, 0, Math.max(0, duration - Math.min(0.04, duration / 2)))
       const end = this.#view.loopEnd === null ? null : Math.min(duration, this.#view.loopEnd)
       this.update({
-        aspect: video.videoHeight > 0 ? video.videoWidth / video.videoHeight : this.#view.aspect,
+        ...(video && video.videoHeight > 0 ? { aspect: video.videoWidth / video.videoHeight } : {}),
         loopStart: start,
         loopEnd: end !== null && end > start ? end : null,
       })
@@ -232,27 +235,32 @@ export class MediaRuntime {
       this.#publish({ ready: true, duration, time: start })
       if (!this.#view.paused) this.play()
     }, options)
-    video.addEventListener('timeupdate', () => {
-      this.#checkLoop(video.currentTime)
-      this.#publish({ time: video.currentTime })
+    playback.addEventListener('timeupdate', () => {
+      this.#checkLoop(playback.currentTime)
+      this.#publish({ time: playback.currentTime })
     }, options)
-    video.addEventListener('seeked', () => {
-      this.#previousTime = video.currentTime
+    playback.addEventListener('seeked', () => {
+      this.#previousTime = playback.currentTime
       this.#loopFrameTime = -Infinity
-      this.#publish({ time: video.currentTime })
+      this.#publish({ time: playback.currentTime })
+      this.#scheduleAudioLoop()
     }, options)
-    video.addEventListener('playing', () => {
+    playback.addEventListener('playing', () => {
       this.#publish({ playing: true })
       this.#requestFrame()
+      this.#scheduleAudioLoop()
     }, options)
-    video.addEventListener('pause', () => this.#publish({ playing: false }), options)
-    video.addEventListener('ended', () => {
+    playback.addEventListener('pause', () => {
+      this.#publish({ playing: false })
+      this.#scheduleAudioLoop()
+    }, options)
+    playback.addEventListener('ended', () => {
       if (this.#view.paused) return
       this.#seek(this.#view.loopStart, true)
       this.play()
     }, options)
-    video.addEventListener('error', this.#fail, options)
-    video.src = mediaUrl(media)
+    playback.addEventListener('error', this.#fail, options)
+    playback.src = mediaUrl(media)
   }
 
   snapshot = () => this.#state
@@ -274,10 +282,12 @@ export class MediaRuntime {
   }
 
   apply(view: View) {
+    const loopEndChanged = view.loopEnd !== this.#view.loopEnd
     this.#view = view
-    if (!this.video) return
-    this.video.muted = view.muted
-    this.video.loop = view.loopStart === 0 && view.loopEnd === null
+    if (!this.playback) return
+    this.playback.muted = view.muted
+    this.playback.loop = view.loopStart === 0 && view.loopEnd === null
+    if (loopEndChanged) this.#scheduleAudioLoop()
   }
 
   seek(time: number) {
@@ -285,39 +295,40 @@ export class MediaRuntime {
   }
 
   mark(point: 'start' | 'end') {
-    const video = this.video
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
-    const gap = Math.min(0.04, video.duration / 2)
+    const playback = this.playback
+    if (!playback || !Number.isFinite(playback.duration) || playback.duration <= 0) return
+    const gap = Math.min(0.04, playback.duration / 2)
     if (point === 'start') {
-      const start = clamp(video.currentTime, 0, video.duration - gap)
+      const start = clamp(playback.currentTime, 0, playback.duration - gap)
       const end = this.#view.loopEnd
       this.update({ loopStart: start, loopEnd: end !== null && end - start >= gap ? end : null })
     } else {
-      const end = clamp(video.currentTime, gap, video.duration)
+      const end = clamp(playback.currentTime, gap, playback.duration)
       const start = end - this.#view.loopStart >= gap ? this.#view.loopStart : 0
       this.update({ loopEnd: end, loopStart: start })
-      if (!video.paused && video.currentTime >= end) this.#seek(start, true)
+      if (!playback.paused && playback.currentTime >= end) this.#seek(start, true)
     }
   }
 
   togglePlayback() {
-    if (!this.video) return
-    if (this.video.paused && !this.#playRequested) {
+    const playback = this.playback
+    if (!playback) return
+    if (playback.paused && !this.#playRequested) {
       this.update({ paused: false })
       const { loopStart, loopEnd } = this.#view
-      const time = this.video.currentTime
-      if (this.video.ended || time < loopStart || (loopEnd !== null && time >= loopEnd)) this.seek(loopStart)
+      const time = playback.currentTime
+      if (playback.ended || time < loopStart || (loopEnd !== null && time >= loopEnd)) this.seek(loopStart)
       this.play()
     } else {
       this.update({ paused: true })
-      this.video.pause()
+      playback.pause()
     }
   }
 
   play() {
-    if (!this.video || this.#playRequested) return
+    if (!this.playback || this.#playRequested) return
     this.#playRequested = true
-    void this.video.play().catch(() => {
+    void this.playback.play().catch(() => {
       this.#publish({ playing: false })
     }).finally(() => { this.#playRequested = false })
   }
@@ -325,23 +336,24 @@ export class MediaRuntime {
   dispose() {
     this.#abort.abort()
     this.setLoopFrameCapture(false)
-    if (this.video) {
-      if (this.#frame !== undefined) this.video.cancelVideoFrameCallback(this.#frame)
-      this.video.pause()
-      this.video.removeAttribute('src')
-      this.video.load()
+    window.clearTimeout(this.#audioLoopTimer)
+    if (this.#frame !== undefined) this.video?.cancelVideoFrameCallback(this.#frame)
+    if (this.playback) {
+      this.playback.pause()
+      this.playback.removeAttribute('src')
+      this.playback.load()
     }
   }
 
   #seek(time: number, looping = false) {
-    const video = this.video
-    if (!video || !Number.isFinite(video.duration)) return
-    const position = clamp(time, 0, video.duration)
-    if (Math.abs(video.currentTime - position) < 0.001) return
-    if (looping) this.#captureLoopFrame(video.currentTime)
+    const playback = this.playback
+    if (!playback || !Number.isFinite(playback.duration)) return
+    const position = clamp(time, 0, playback.duration)
+    if (Math.abs(playback.currentTime - position) < 0.001) return
+    if (looping) this.#captureLoopFrame(playback.currentTime)
     else this.#loopFrameTime = -Infinity
     this.#previousTime = position
-    video.currentTime = position
+    playback.currentTime = position
     this.#publish({ time: position })
   }
 
@@ -355,15 +367,31 @@ export class MediaRuntime {
     })
   }
 
-  #checkLoop(time: number) {
-    const video = this.video
+  #scheduleAudioLoop() {
+    const playback = this.playback
+    if (!playback || this.video) return
+    window.clearTimeout(this.#audioLoopTimer)
     const end = this.#view.loopEnd
-    if (!video || video.paused || video.seeking) return
+    if (end === null || playback.paused || playback.seeking || playback.readyState < playback.HAVE_FUTURE_DATA) return
+    const remaining = end - playback.currentTime
+    if (remaining <= 0) return
+    // Check B between timeupdate events, including when the scene isn't rendering.
+    this.#audioLoopTimer = window.setTimeout(() => {
+      this.#checkLoop(playback.currentTime)
+      this.#scheduleAudioLoop()
+    }, clamp(remaining * 1000, 10, 0x7fffffff))
+  }
+
+  #checkLoop(time: number) {
+    const playback = this.playback
+    const end = this.#view.loopEnd
+    if (!playback || playback.paused || playback.seeking) return
     const crossed = end !== null && this.#previousTime < end && time >= end
     this.#previousTime = time
     if (crossed) this.#seek(this.#view.loopStart, true)
     // The browser can loop at the end of the file before the app sees a seek.
-    else if (end === null && time >= video.duration - loopCaptureWindow && time - this.#loopFrameTime >= loopCaptureInterval) {
+    else if (this.#captureLoopFrames && end === null &&
+      time >= playback.duration - loopCaptureWindow && time - this.#loopFrameTime >= loopCaptureInterval) {
       this.#captureLoopFrame(time)
     }
   }
@@ -494,6 +522,8 @@ export class Workspace {
     }
     this.#createRuntime({ ...view, ...patch })
     this.patch(id, patch)
+    // Use the file-selection gesture so browsers that block audio autoplay can start playback.
+    if (media.kind === 'audio') this.runtime(id)?.play()
   }
 
   back(id: string) {
