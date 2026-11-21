@@ -2,7 +2,7 @@ import { BufferGeometry, Group, LineBasicMaterial, LineLoop, Mesh, MeshBasicMate
 import { uiColors } from './ui-style'
 import { clamp, windowDefaults } from './workspace'
 
-const holdDuration = 1000
+const holdDuration = 500
 const ringSegments = 120
 
 export class WindowPreview {

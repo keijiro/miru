@@ -24,6 +24,10 @@ const backHeight = 52
 const backMargin = metres(24)
 const backReach = metres(5)
 const dimOpacity = 0.25
+const gripFadeDuration = 90
+const openingLineDuration = 45
+const openingExpandDuration = 50
+const openingFlashDuration = 30
 const gripDirections = [
   [-1, 0], [1, 0], [0, -1], [0, 1],
   [-1, -1], [1, -1], [-1, 1], [1, 1],
@@ -91,6 +95,40 @@ function gripFace(group: Group) {
 function place(mesh: Face, width: number, height: number, y: number) {
   mesh.scale.set(width, height, 1)
   mesh.position.set(0, y, 0)
+}
+
+class PanelOpening {
+  #mesh: Face
+  #started?: number
+
+  constructor(group: Group) {
+    this.#mesh = face(group, uiColors.outline)
+    this.#mesh.material.side = DoubleSide
+    this.#mesh.visible = false
+  }
+
+  update(now: number, shown: boolean, bounds: Face) {
+    if (!shown) {
+      this.#started = undefined
+      this.#mesh.visible = false
+      return false
+    }
+    this.#started ??= now
+    const elapsed = now - this.#started
+    const flashStart = openingLineDuration + openingExpandDuration
+    this.#mesh.visible = elapsed < flashStart + openingFlashDuration
+    if (!this.#mesh.visible) return true
+
+    const line = clamp(elapsed / openingLineDuration, 0, 1)
+    const expand = clamp((elapsed - openingLineDuration) / openingExpandDuration, 0, 1)
+    const thickness = metres(2)
+    place(this.#mesh,
+      thickness + (bounds.scale.x - thickness) * line,
+      thickness + (bounds.scale.y - thickness) * expand,
+      bounds.position.y)
+    this.#mesh.material.color.set(elapsed < flashStart ? uiColors.outline : 0xffffff)
+    return false
+  }
 }
 
 function surround(group: Group, color: string) {
@@ -356,20 +394,27 @@ function xyDrag(
 export class SceneWindow {
   readonly group = new Group()
   #view: View
-  #back = face(this.group, uiColors.surface)
-  #screen = surround(this.group, uiColors.surface)
-  #media = face(this.group, 0xffffff)
+  #bodyGroup = new Group()
+  #back = face(this.#bodyGroup, uiColors.surface)
+  #screen = surround(this.#bodyGroup, uiColors.surface)
+  #media = face(this.#bodyGroup, 0xffffff)
   #hitbox = face(this.group, 0xffffff)
   #controls = new Panel(this.group)
-  #message = new Panel(this.group)
+  #message = new Panel(this.#bodyGroup)
   #returnButton = new Panel(this.group, true)
+  #bodyOpening = new PanelOpening(this.group)
+  #controlsOpening = new PanelOpening(this.group)
+  #showControls = false
   #returnHovered = false
+  #gripOpacity = 0
+  #lastAffordanceUpdate?: number
   #grips: Grip[] = gripDirections.map(([x, y]) => ({
     kind: 'grip', x, y,
     horizontal: y ? gripFace(this.group) : undefined,
     vertical: x ? gripFace(this.group) : undefined,
   }))
   #highlighted = new Set<Affordance>()
+  #visibleHighlights = new Set<Affordance>()
   readonly targets = [this.#hitbox, this.#controls.mesh]
   #browser?: FileBrowser
   #runtime?: MediaRuntime
@@ -381,6 +426,7 @@ export class SceneWindow {
 
   constructor(private readonly workspace: Workspace, view: View, private readonly end: Action) {
     this.#view = view
+    this.group.add(this.#bodyGroup)
     this.#hitbox.material.visible = false
     this.#message.mesh.visible = false
     this.#media.visible = false
@@ -428,7 +474,7 @@ export class SceneWindow {
 
   get radius() {
     const { width, height } = this.#size
-    const bottom = this.#controls.mesh.visible
+    const bottom = this.#showControls
       ? -this.#controls.mesh.position.y + this.#controls.mesh.scale.y / 2
       : height / 2 + windowGripReach
     return Math.hypot(width / 2 + windowGripReach, bottom)
@@ -443,12 +489,12 @@ export class SceneWindow {
     }
   }
 
-  sync(view: View, runtime: MediaRuntime | undefined, immersive: boolean) {
+  sync(view: View, runtime: MediaRuntime | undefined, immersive: boolean, now: number) {
     const nativeVideo = immersive && Boolean(runtime?.video)
     const runtimeChanged = runtime !== this.#runtime
     const modeChanged = immersive !== this.#immersive
     const createBrowser = !runtime && !this.#browser
-    if (createBrowser) this.#browser = new FileBrowser(this.group, this.workspace, view.id, this.end)
+    if (createBrowser) this.#browser = new FileBrowser(this.#bodyGroup, this.workspace, view.id, this.end)
     if (runtimeChanged || (modeChanged && runtime?.video)) {
       runtime?.setLoopFrameCapture(nativeVideo)
       this.#runtime = runtime
@@ -465,6 +511,12 @@ export class SceneWindow {
       this.#immersive = immersive
       this.#layout()
     }
+    // Three.js uses the innermost group's render order for its meshes.
+    this.#bodyGroup.renderOrder = this.group.renderOrder
+    this.#bodyGroup.visible = this.#hitbox.visible = this.#bodyOpening.update(now, true, this.#back)
+    this.#showControls = Boolean(runtime?.playback) && view.controls
+    const controls = this.#controls.mesh
+    controls.visible = this.#controlsOpening.update(now, this.#showControls, controls)
     if (this.#browser) this.#browser.mesh.visible = !runtime
     if (!runtime) {
       this.#screen.visible = false
@@ -485,7 +537,7 @@ export class SceneWindow {
       this.#media.visible = (nativeVideo ? media.ready : Boolean(this.#texture)) && !media.error
       this.#showMessage(media.error ? 'Could not display the file' : this.#media.visible ? '' : 'Loading…')
     }
-    if (this.#controls.mesh.visible) this.#paintControls(runtime)
+    if (this.#showControls) this.#paintControls(runtime)
   }
 
   #setMediaTexture(texture: Texture) {
@@ -539,12 +591,23 @@ export class SceneWindow {
     else if (typeof part === 'object') part.highlight()
   }
 
-  updateAffordances() {
+  updateAffordances(now: number) {
     this.#browser?.updateHover()
     if (this.#controls.updateHover()) this.#lastControls = ''
-    const visible = this.#highlighted.size > 0
+    const revealed = this.#highlighted.size > 0
+    // Keep the last highlight at its relative brightness as the frame fades out.
+    if (revealed) {
+      const previous = this.#visibleHighlights
+      this.#visibleHighlights = this.#highlighted
+      this.#highlighted = previous
+      this.#highlighted.clear()
+    }
+    const step = (now - (this.#lastAffordanceUpdate ?? now)) / gripFadeDuration
+    this.#lastAffordanceUpdate = now
+    this.#gripOpacity = clamp(this.#gripOpacity + (revealed ? step : -step), 0, 1)
+    const visible = this.#gripOpacity > 0
     for (const grip of this.#grips) {
-      const opacity = this.#highlighted.has(grip) ? 1 : dimOpacity
+      const opacity = this.#gripOpacity * (this.#visibleHighlights.has(grip) ? 1 : dimOpacity)
       if (grip.horizontal) {
         grip.horizontal.visible = visible
         grip.horizontal.material.opacity = opacity
@@ -556,13 +619,12 @@ export class SceneWindow {
     }
     const button = this.#returnButton.mesh
     button.visible = visible && Boolean(this.#view.media)
-    const returnHovered = this.#highlighted.has('back')
+    const returnHovered = this.#visibleHighlights.has('back')
     if (this.#returnHovered !== returnHovered) {
       this.#returnHovered = returnHovered
       this.#paintReturnButton()
     }
-    button.material.opacity = returnHovered ? 1 : dimOpacity
-    this.#highlighted.clear()
+    button.material.opacity = this.#gripOpacity * (returnHovered ? 1 : dimOpacity)
   }
 
   press(part: WindowPart, hit: Hit, ray: Ray) {
@@ -584,7 +646,8 @@ export class SceneWindow {
     this.#texture?.dispose()
     this.#browser?.dispose()
     for (const panel of [this.#returnButton, this.#controls, this.#message]) panel.dispose()
-    for (const child of this.group.children as Face[]) {
+    for (const child of [...this.group.children, ...this.#bodyGroup.children]) {
+      if (!(child instanceof Mesh)) continue
       child.geometry.dispose()
       child.material.dispose()
     }
@@ -609,7 +672,6 @@ export class SceneWindow {
     this.#message.layout(view.media?.kind === 'audio' ? width : Math.min(width, metres(450)), metres(65), 0)
     cutout(this.#screen, this.#message.mesh.scale.x, this.#message.mesh.scale.y, 0, 0)
     this.#controls.layout(width, controls, -(height + controls) / 2 - chromeGap)
-    this.#controls.mesh.visible = Boolean(this.#runtime?.playback) && view.controls
     for (const { x, y, horizontal, vertical } of this.#grips) {
       if (horizontal) {
         const length = x ? cornerHandleLength : width - 2 * cornerLength

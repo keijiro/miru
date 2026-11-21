@@ -425,6 +425,7 @@ export class WorkspaceScene {
   }
 
   #sync(immersive: boolean) {
+    const now = performance.now()
     const { views, selected } = this.workspace.snapshot()
     const eye = immersive ? this.#headPosition : this.#desktopCamera.position
     let fogNear = fogStart
@@ -447,7 +448,7 @@ export class WorkspaceScene {
       if (panel.runtime !== runtime) this.#cancelGrabs(panel)
       // Desktop windows created at the same depth still need a deterministic stacking order.
       panel.group.renderOrder = immersive ? 0 : selected === view.id ? views.length + 1 : index + 1
-      panel.sync(view, runtime, immersive)
+      panel.sync(view, runtime, immersive, now)
       panel.group.lookAt(eye)
       if (!immersive) fogNear = Math.max(fogNear, eye.z - view.z + panel.radius)
       for (const target of panel.targets) if (target.visible) this.#targets.set(target, panel)
@@ -487,7 +488,8 @@ export class WorkspaceScene {
     }
     if (this.#updateWindowPreviews(immersive ? this.#headPosition : this.#desktopCamera.position)) this.#sync(immersive)
     if (!immersive) this.#updateMouseHover()
-    for (const panel of this.#windows.values()) panel.updateAffordances()
+    const now = performance.now()
+    for (const panel of this.#windows.values()) panel.updateAffordances(now)
     const { panorama } = this.workspace.snapshot()
     let xrPanorama: XrPanorama | undefined
     if (immersive) {
