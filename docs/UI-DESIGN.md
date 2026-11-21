@@ -38,6 +38,6 @@ Reveal move and resize handles when a pointer approaches an edge or corner. In a
 
 ## Implementation
 
-Define shared colors, font settings, and the base control radius in one place. The app exposes these values as CSS custom properties for the desktop overlay, and the scene imports the same values for canvas textures and WebGL. [Shared styles](src/ui-style.ts) · [Desktop styles](src/style.css)
+Define shared colors, font settings, and the base control radius in one place. The app exposes these values as CSS custom properties for the desktop overlay, and the scene imports the same values for canvas textures and WebGL. [Shared styles](../src/ui-style.ts) · [Desktop styles](../src/style.css)
 
-Reuse the scene panel's button and hover behavior for new in-window actions so mouse and VR input give the same feedback. [Scene panels](src/scene-window.ts)
+Reuse the scene panel's button and hover behavior for new in-window actions so mouse and VR input give the same feedback. [Scene panels](../src/scene-window.ts)
