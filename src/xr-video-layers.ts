@@ -2,6 +2,7 @@ import {
   Box2, Matrix4, NoBlending, Quaternion, ShaderMaterial, UniformsLib, UniformsUtils, Vector2, Vector3, Vector4,
   type BufferAttribute,
 } from 'three'
+import type { XrPanorama } from './panorama'
 import type { Face, SceneWindow } from './scene-window'
 
 const viewport = new Box2(new Vector2(-1, -1), new Vector2(1, 1))
@@ -44,6 +45,7 @@ export class XrVideoLayers {
   #submitted: XRLayer[] = []
   #panoramaVideo?: HTMLVideoElement
   #panoramaYaw = 0
+  #panoramaLoopFrame?: HTMLCanvasElement
   #available = true
   #limit: number
   #projectionAlpha: boolean
@@ -96,7 +98,7 @@ export class XrVideoLayers {
     this.#projectionAlpha = projection.blendTextureSourceAlpha
   }
 
-  sync(panels: Iterable<SceneWindow>, pose: XRViewerPose | null, panoramaId: string | null, yaw: number) {
+  sync(panels: Iterable<SceneWindow>, pose: XRViewerPose | null, panoramaId: string | null, yaw: number): XrPanorama | undefined {
     const windows: VideoWindow[] = []
     for (const panel of panels) {
       const video = panel.runtime?.video
@@ -105,7 +107,8 @@ export class XrVideoLayers {
     }
 
     const source = windows.find(({ panel }) => panel.id === panoramaId)
-    const panorama = this.#panorama(source?.video, yaw)
+    const loopFrame = source?.panel.runtime?.loopFrame
+    const panorama = this.#panorama(source?.video, yaw, Boolean(loopFrame))
     const candidates: Candidate[] = []
     if (pose?.views.length) {
       const matrices = pose.views.map(view => new Matrix4().fromArray(view.projectionMatrix)
@@ -113,7 +116,9 @@ export class XrVideoLayers {
       const { x, y, z } = pose.transform.position
       const viewer = new Vector3(x, y, z)
       for (const window of windows) {
-        if (window.video.readyState < window.video.HAVE_CURRENT_DATA) continue
+        const { panel, video } = window
+        // Keep an existing layer assigned while its window shows the frame before the loop.
+        if (video.readyState < video.HAVE_CURRENT_DATA && !(panel.runtime?.loopFrame && this.#entries.has(video))) continue
         const candidate = this.#candidate(window, matrices, viewer)
         if (candidate) candidates.push(candidate)
       }
@@ -145,7 +150,7 @@ export class XrVideoLayers {
       } else if (!layer && visible.has(panel)) panel.setVideoLayer(undefined, videoLayerLimit)
       // The render state is applied on the next XR frame. During removal, keep windows opaque
       // until a retired layer can no longer show through a different window.
-      else panel.setVideoLayer(layer && !removing && active.includes(layer) ? this.#mask : undefined)
+      else panel.setVideoLayer(layer && !removing && active.includes(layer) && !panel.runtime?.loopFrame ? this.#mask : undefined)
     }
     for (const entries of [this.#entries, this.#panoramas]) {
       for (const [video, { layer }] of entries) {
@@ -154,7 +159,14 @@ export class XrVideoLayers {
         entries.delete(video)
       }
     }
-    return !removing && scheduledPanorama && active.includes(scheduledPanorama) ? this.#panoramaYaw : null
+    if (!scheduledPanorama) {
+      this.#panoramaLoopFrame = undefined
+      return
+    }
+    const showNative = !loopFrame && !removing && active.includes(scheduledPanorama)
+    // Hold the frame until the native panorama can safely be shown through the projection.
+    this.#panoramaLoopFrame = showNative ? undefined : loopFrame ?? this.#panoramaLoopFrame
+    if (showNative || this.#panoramaLoopFrame) return { yaw: this.#panoramaYaw, loopFrame: this.#panoramaLoopFrame }
   }
 
   dispose() {
@@ -233,18 +245,19 @@ export class XrVideoLayers {
     }
   }
 
-  #panorama(video: HTMLVideoElement | undefined, yaw: number) {
+  #panorama(video: HTMLVideoElement | undefined, yaw: number, holdingLoopFrame: boolean) {
     const changed = video !== this.#panoramaVideo
     if (changed) {
       this.#panoramaVideo = video
       this.#panoramaYaw = yaw
+      this.#panoramaLoopFrame = undefined
     }
-    if (!this.#available || !this.#limit || !video ||
-        video.readyState < video.HAVE_CURRENT_DATA || this.#panoramaUnavailable.has(video)) return
+    if (!this.#available || !this.#limit || !video || this.#panoramaUnavailable.has(video)) return
     const existing = this.#panoramas.get(video)?.layer
+    if (video.readyState < video.HAVE_CURRENT_DATA && !(existing && holdingLoopFrame)) return
     if (existing && !changed) return existing
     const angle = this.#panoramaYaw / 2
-    const transform = new XRRigidTransform({}, { y: Math.sin(angle), w: Math.cos(angle) })
+    const transform = new XRRigidTransform(undefined, { x: 0, y: Math.sin(angle), z: 0, w: Math.cos(angle) })
     try {
       if (existing) {
         existing.transform = transform

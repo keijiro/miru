@@ -171,6 +171,9 @@ export function panned(view: View, dx: number, dy: number): Pick<View, 'panX' | 
 }
 
 const normalizedTime = (time: number) => Number.isFinite(time) && time > 0 ? time : 0
+const loopCaptureWindow = 0.4
+const loopCaptureInterval = 1 / 15
+const loopFrameMaxSize = 1280
 
 export function formatTime(seconds: number) {
   const n = Math.floor(normalizedTime(seconds))
@@ -187,6 +190,9 @@ export class MediaRuntime {
   #frame?: number
   #previousTime = 0
   #playRequested = false
+  #captureLoopFrames = false
+  #loopFrameContext?: CanvasRenderingContext2D
+  #loopFrameTime = -Infinity
 
   constructor(view: View, media: MediaEntry, private readonly update: (patch: Partial<View>) => void) {
     this.#view = view
@@ -232,6 +238,7 @@ export class MediaRuntime {
     }, options)
     video.addEventListener('seeked', () => {
       this.#previousTime = video.currentTime
+      this.#loopFrameTime = -Infinity
       this.#publish({ time: video.currentTime })
     }, options)
     video.addEventListener('playing', () => {
@@ -241,7 +248,7 @@ export class MediaRuntime {
     video.addEventListener('pause', () => this.#publish({ playing: false }), options)
     video.addEventListener('ended', () => {
       if (this.#view.paused) return
-      this.seek(this.#view.loopStart)
+      this.#seek(this.#view.loopStart, true)
       this.play()
     }, options)
     video.addEventListener('error', this.#fail, options)
@@ -249,6 +256,22 @@ export class MediaRuntime {
   }
 
   snapshot = () => this.#state
+
+  get loopFrame() {
+    const video = this.video
+    if (!video || this.#loopFrameTime === -Infinity) return
+    if (video.seeking || (video.readyState < video.HAVE_CURRENT_DATA && video.currentTime < this.#loopFrameTime)) {
+      return this.#loopFrameContext?.canvas
+    }
+  }
+
+  setLoopFrameCapture(enabled: boolean) {
+    this.#captureLoopFrames = enabled
+    if (!enabled) {
+      this.#loopFrameContext = undefined
+      this.#loopFrameTime = -Infinity
+    }
+  }
 
   apply(view: View) {
     this.#view = view
@@ -258,12 +281,7 @@ export class MediaRuntime {
   }
 
   seek(time: number) {
-    if (!this.video || !Number.isFinite(this.video.duration)) return
-    const position = clamp(time, 0, this.video.duration)
-    if (Math.abs(this.video.currentTime - position) < 0.001) return
-    this.#previousTime = position
-    this.video.currentTime = position
-    this.#publish({ time: position })
+    this.#seek(time)
   }
 
   mark(point: 'start' | 'end') {
@@ -278,7 +296,7 @@ export class MediaRuntime {
       const end = clamp(video.currentTime, gap, video.duration)
       const start = end - this.#view.loopStart >= gap ? this.#view.loopStart : 0
       this.update({ loopEnd: end, loopStart: start })
-      if (!video.paused && video.currentTime >= end) this.seek(start)
+      if (!video.paused && video.currentTime >= end) this.#seek(start, true)
     }
   }
 
@@ -306,12 +324,25 @@ export class MediaRuntime {
 
   dispose() {
     this.#abort.abort()
+    this.setLoopFrameCapture(false)
     if (this.video) {
       if (this.#frame !== undefined) this.video.cancelVideoFrameCallback(this.#frame)
       this.video.pause()
       this.video.removeAttribute('src')
       this.video.load()
     }
+  }
+
+  #seek(time: number, looping = false) {
+    const video = this.video
+    if (!video || !Number.isFinite(video.duration)) return
+    const position = clamp(time, 0, video.duration)
+    if (Math.abs(video.currentTime - position) < 0.001) return
+    if (looping) this.#captureLoopFrame(video.currentTime)
+    else this.#loopFrameTime = -Infinity
+    this.#previousTime = position
+    video.currentTime = position
+    this.#publish({ time: position })
   }
 
   #requestFrame() {
@@ -330,7 +361,27 @@ export class MediaRuntime {
     if (!video || video.paused || video.seeking) return
     const crossed = end !== null && this.#previousTime < end && time >= end
     this.#previousTime = time
-    if (crossed) this.seek(this.#view.loopStart)
+    if (crossed) this.#seek(this.#view.loopStart, true)
+    // The browser can loop at the end of the file before the app sees a seek.
+    else if (end === null && time >= video.duration - loopCaptureWindow && time - this.#loopFrameTime >= loopCaptureInterval) {
+      this.#captureLoopFrame(time)
+    }
+  }
+
+  #captureLoopFrame(time: number) {
+    const video = this.video
+    if (!this.#captureLoopFrames || !video || video.seeking || video.readyState < video.HAVE_CURRENT_DATA) return
+    const { videoWidth, videoHeight } = video
+    if (!videoWidth || !videoHeight) return
+    const context = this.#loopFrameContext ??= document.createElement('canvas').getContext('2d') ?? undefined
+    if (!context) return
+    const scale = Math.min(1, loopFrameMaxSize / Math.max(videoWidth, videoHeight))
+    const width = Math.max(1, Math.round(videoWidth * scale))
+    const height = Math.max(1, Math.round(videoHeight * scale))
+    if (context.canvas.width !== width) context.canvas.width = width
+    if (context.canvas.height !== height) context.canvas.height = height
+    context.drawImage(video, 0, 0, width, height)
+    this.#loopFrameTime = time
   }
 
   #fail = () => this.#publish({

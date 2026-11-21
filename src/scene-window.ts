@@ -349,7 +349,7 @@ export class SceneWindow {
     return this.#immersive && this.#runtime?.video && this.#media.visible ? this.#media : undefined
   }
 
-  setVideoLayer(material?: ShaderMaterial, message = 'Loading…') {
+  setVideoLayer(material?: ShaderMaterial, message?: string) {
     if (material) {
       if (!this.#videoMask) {
         this.#videoMask = new Mesh(this.#media.geometry, material)
@@ -358,7 +358,14 @@ export class SceneWindow {
       this.#videoMask.material = material
     }
     if (this.#videoMask) this.#videoMask.visible = Boolean(material)
-    if (this.#media.visible) this.#showMessage(material ? '' : message)
+    if (!this.#media.visible) return
+    const frame = !material && message === undefined ? this.#runtime?.loopFrame : undefined
+    if (frame && !this.#media.material.visible) {
+      if (this.#texture) this.#texture.needsUpdate = true
+      else this.#setMediaTexture(new CanvasTexture(frame))
+    }
+    this.#media.material.visible = Boolean(frame)
+    this.#showMessage(material || frame ? '' : message ?? 'Loading…')
   }
 
   get radius() {
@@ -385,6 +392,7 @@ export class SceneWindow {
     const createBrowser = !runtime && !this.#browser
     if (createBrowser) this.#browser = new FileBrowser(this.group, this.workspace, view.id, this.end)
     if (runtimeChanged || (modeChanged && runtime?.video)) {
+      runtime?.setLoopFrameCapture(nativeVideo)
       this.#runtime = runtime
       this.#texture?.dispose()
       this.#texture = undefined
@@ -409,16 +417,19 @@ export class SceneWindow {
     }
     const media = runtime.snapshot()
     if (media.ready && !nativeVideo && !this.#texture) {
-      const texture = runtime.video ? new VideoTexture(runtime.video) : new Texture(runtime.element)
-      texture.colorSpace = SRGBColorSpace
-      texture.needsUpdate = true
-      this.#texture = texture
-      this.#media.material.map = texture
-      this.#media.material.needsUpdate = true
+      this.#setMediaTexture(runtime.video ? new VideoTexture(runtime.video) : new Texture(runtime.element))
     }
     this.#media.visible = (nativeVideo ? media.ready : Boolean(this.#texture)) && !media.error
     this.#showMessage(media.error ? 'Could not display the file' : this.#media.visible ? '' : 'Loading…')
     if (this.#controls.mesh.visible) this.#paintControls(runtime)
+  }
+
+  #setMediaTexture(texture: Texture) {
+    texture.colorSpace = SRGBColorSpace
+    texture.needsUpdate = true
+    this.#texture = texture
+    this.#media.material.map = texture
+    this.#media.material.needsUpdate = true
   }
 
   #showMessage(message: string) {

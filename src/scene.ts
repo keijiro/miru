@@ -3,7 +3,7 @@ import {
   Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
   SphereGeometry, Vector2, Vector3, WebGLRenderer, type Ray, type XRTargetRaySpace,
 } from 'three'
-import { Panorama } from './panorama'
+import { Panorama, type XrPanorama } from './panorama'
 import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
 import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
@@ -426,17 +426,16 @@ export class WorkspaceScene {
     if (!immersive) this.#updateMouseHover()
     for (const panel of this.#windows.values()) panel.updateAffordances()
     const { panorama } = this.workspace.snapshot()
-    let nativePanorama: number | null = null
+    let xrPanorama: XrPanorama | undefined
     if (immersive) {
       if (this.#videoLayers) {
-        nativePanorama = this.#videoLayers.sync(this.#windows.values(), pose, panorama, this.#headYaw)
+        xrPanorama = this.#videoLayers.sync(this.#windows.values(), pose, panorama, this.#headYaw)
       } else {
         for (const panel of this.#windows.values()) if (panel.videoPlane) panel.setVideoLayer(undefined, videoLayerUnavailable)
       }
     }
     const texture = !immersive && panorama !== null ? this.#windows.get(panorama)?.videoTexture : undefined
-    this.#panorama.sync(texture, nativePanorama)
-    this.#floor.visible = !texture && nativePanorama === null
+    this.#floor.visible = !this.#panorama.sync(texture, xrPanorama)
     this.#renderer.render(this.#scene, immersive ? this.#xrCamera : this.#desktopCamera)
   }
 
