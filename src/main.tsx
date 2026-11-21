@@ -5,6 +5,7 @@ import { fetchDirectory } from './media-api'
 import { WorkspaceScene } from './scene'
 import { uiColors, uiControlRadius, uiFontFamily, uiFontWeight } from './ui-style'
 import { Workspace } from './workspace'
+import { questVideoLayerOptions } from './xr-video-layers'
 import './style.css'
 
 function App({ workspace }: { workspace: Workspace }) {
@@ -66,7 +67,7 @@ function App({ workspace }: { workspace: Workspace }) {
     if (!navigator.xr) return
     setPending(true)
     try {
-      const xrSession = await navigator.xr.requestSession('immersive-vr')
+      const xrSession = await navigator.xr.requestSession('immersive-vr', questVideoLayerOptions())
       if (scene.current !== renderer) {
         await xrSession.end()
         return

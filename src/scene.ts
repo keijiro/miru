@@ -7,6 +7,7 @@ import { Panorama } from './panorama'
 import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
 import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
+import { isQuestBrowser, videoLayerUnavailable, XrVideoLayers } from './xr-video-layers'
 
 const controllerSmoothingTime = 0.035 // Seconds
 const cameraFov = 55
@@ -53,6 +54,8 @@ export class WorkspaceScene {
   #resize: ResizeObserver
   #events = new AbortController()
   #previousFrame = 0
+  #questBrowser = isQuestBrowser()
+  #videoLayers?: XrVideoLayers
 
   constructor(private readonly workspace: Workspace, container: HTMLElement) {
     const canvas = document.createElement('canvas')
@@ -96,6 +99,15 @@ export class WorkspaceScene {
     this.#headYaw = 0
     this.#needsDesktopFit = true
     await this.#renderer.xr.setSession(session)
+    if (this.#renderer.xr.getSession() !== session) return
+    const layers = XrVideoLayers.create(session, this.#renderer.xr.getBaseLayer(), this.#renderer.xr.getReferenceSpace())
+    if (layers) {
+      this.#videoLayers = layers
+      session.addEventListener('end', () => {
+        if (this.#videoLayers === layers) this.#videoLayers = undefined
+        layers.dispose()
+      }, { once: true })
+    }
   }
 
   fit() {
@@ -128,6 +140,8 @@ export class WorkspaceScene {
     this.#finishMouse(false)
     this.#events.abort()
     this.#resize.disconnect()
+    this.#videoLayers?.dispose()
+    this.#videoLayers = undefined
     this.#panorama.dispose()
     for (const panel of this.#windows.values()) panel.dispose()
     for (const pointer of this.#pointers) {
@@ -373,7 +387,7 @@ export class WorkspaceScene {
       if (panel.runtime !== runtime) this.#cancelGrabs(panel)
       // Desktop windows created at the same depth still need a deterministic stacking order.
       panel.group.renderOrder = immersive ? 0 : selected === view.id ? views.length + 1 : index + 1
-      panel.sync(view, runtime, immersive)
+      panel.sync(view, runtime, immersive, immersive && this.#questBrowser)
       panel.group.lookAt(eye)
       if (!immersive) fogNear = Math.max(fogNear, eye.z - view.z + panel.radius)
       for (const target of panel.targets) if (target.visible) this.#targets.set(target, panel)
@@ -387,10 +401,11 @@ export class WorkspaceScene {
   #frame = (time: number, frame?: XRFrame) => {
     const immersive = this.#renderer.xr.isPresenting
     if (!immersive && this.#renderer.xr.getSession()) return
+    let pose: XRViewerPose | null = null
     if (immersive && frame) {
       // Use the headset center in the same reference space as the controller rays.
       const referenceSpace = this.#renderer.xr.getReferenceSpace()
-      const pose = referenceSpace && frame.getViewerPose(referenceSpace)
+      pose = (referenceSpace && frame.getViewerPose(referenceSpace)) ?? null
       if (pose) {
         const { x, y, z } = pose.transform.position
         this.#headPosition.set(x, y, z)
@@ -413,9 +428,17 @@ export class WorkspaceScene {
     if (!immersive) this.#updateMouseHover()
     for (const panel of this.#windows.values()) panel.updateAffordances()
     const { panorama } = this.workspace.snapshot()
+    let nativePanorama: number | null = null
+    if (immersive && this.#questBrowser) {
+      if (this.#videoLayers) {
+        nativePanorama = this.#videoLayers.sync(this.#windows.values(), pose, panorama, this.#headYaw)
+      } else {
+        for (const panel of this.#windows.values()) if (panel.videoPlane) panel.setVideoLayer(undefined, videoLayerUnavailable)
+      }
+    }
     const texture = panorama === null ? undefined : this.#windows.get(panorama)?.videoTexture
-    this.#panorama.sync(texture, immersive ? this.#headYaw : null)
-    this.#floor.visible = !texture
+    this.#panorama.sync(texture, immersive ? this.#headYaw : null, nativePanorama)
+    this.#floor.visible = !texture && nativePanorama === null
     this.#renderer.render(this.#scene, immersive ? this.#xrCamera : this.#desktopCamera)
   }
 

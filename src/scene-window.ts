@@ -1,6 +1,6 @@
 import {
   BackSide, CanvasTexture, DoubleSide, Group, Mesh, MeshBasicMaterial, Plane, PlaneGeometry,
-  Quaternion, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Ray,
+  Quaternion, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Ray, type ShaderMaterial,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
 import { uiColors, uiControlRadius, uiFontFamily, uiFontWeight } from './ui-style'
@@ -316,6 +316,8 @@ export class SceneWindow {
   #browser?: FileBrowser
   #runtime?: MediaRuntime
   #texture?: Texture
+  #videoMask?: Mesh<PlaneGeometry, ShaderMaterial>
+  #nativeVideo = false
   #immersive = true
   #lastControls = ''
   #lastMessage = ''
@@ -344,6 +346,22 @@ export class SceneWindow {
     return this.#media.visible && this.#texture instanceof VideoTexture ? this.#texture : undefined
   }
 
+  get videoPlane() {
+    return this.#nativeVideo && this.#media.visible ? this.#media : undefined
+  }
+
+  setVideoLayer(material?: ShaderMaterial, message = 'Loading…') {
+    if (material) {
+      if (!this.#videoMask) {
+        this.#videoMask = new Mesh(this.#media.geometry, material)
+        this.#media.add(this.#videoMask)
+      }
+      this.#videoMask.material = material
+    }
+    if (this.#videoMask) this.#videoMask.visible = Boolean(material)
+    if (this.#media.visible) this.#showMessage(material ? '' : message)
+  }
+
   get radius() {
     const { width, height } = this.#size
     const bottom = this.#controls.mesh.visible
@@ -361,15 +379,19 @@ export class SceneWindow {
     }
   }
 
-  sync(view: View, runtime: MediaRuntime | undefined, immersive: boolean) {
+  sync(view: View, runtime: MediaRuntime | undefined, immersive: boolean, nativeVideo: boolean) {
+    nativeVideo &&= Boolean(runtime?.video)
     const runtimeChanged = runtime !== this.#runtime
     const createBrowser = !runtime && !this.#browser
     if (createBrowser) this.#browser = new FileBrowser(this.group, this.workspace, view.id, this.end)
-    if (runtimeChanged) {
+    if (runtimeChanged || nativeVideo !== this.#nativeVideo) {
       this.#runtime = runtime
+      this.#nativeVideo = nativeVideo
       this.#texture?.dispose()
       this.#texture = undefined
       this.#media.material.map = null
+      this.#media.material.visible = !nativeVideo
+      if (this.#videoMask) this.#videoMask.visible = false
       this.#lastControls = ''
     }
     const relayout = view !== this.#view || runtimeChanged || createBrowser || immersive !== this.#immersive
@@ -387,7 +409,7 @@ export class SceneWindow {
       return
     }
     const media = runtime.snapshot()
-    if (media.ready && !this.#texture) {
+    if (media.ready && !nativeVideo && !this.#texture) {
       const texture = runtime.video ? new VideoTexture(runtime.video) : new Texture(runtime.element)
       texture.colorSpace = SRGBColorSpace
       texture.needsUpdate = true
@@ -395,22 +417,23 @@ export class SceneWindow {
       this.#media.material.map = texture
       this.#media.material.needsUpdate = true
     }
-    const mediaVisible = Boolean(this.#texture) && !media.error
-    this.#screen.visible = !mediaVisible
-    this.#media.visible = mediaVisible
-    this.#message.mesh.visible = !mediaVisible
-    const message = media.error ? 'Could not display the file' : 'Loading…'
+    this.#media.visible = (nativeVideo ? media.ready : Boolean(this.#texture)) && !media.error
+    this.#showMessage(media.error ? 'Could not display the file' : this.#media.visible ? '' : 'Loading…')
+    if (this.#controls.mesh.visible) this.#paintControls(runtime)
+  }
+
+  #showMessage(message: string) {
+    this.#screen.visible = this.#message.mesh.visible = Boolean(message)
+    if (!message) return
     const messageWidth = this.#message.width
     const messageSignature = `${messageWidth}:${message}`
-    if (this.#message.mesh.visible && messageSignature !== this.#lastMessage) {
-      this.#lastMessage = messageSignature
-      this.#message.paint(ctx => {
-        ctx.textAlign = 'center'
-        text(ctx, message, messageWidth / 2, 33, 23, uiColors.muted, messageWidth - 16)
-        ctx.textAlign = 'left'
-      })
-    }
-    if (this.#controls.mesh.visible) this.#paintControls(runtime)
+    if (messageSignature === this.#lastMessage) return
+    this.#lastMessage = messageSignature
+    this.#message.paint(ctx => {
+      ctx.textAlign = 'center'
+      text(ctx, message, messageWidth / 2, 33, 23, uiColors.muted, messageWidth - 16)
+      ctx.textAlign = 'left'
+    })
   }
 
   part(hit: Hit): WindowPart | undefined {
