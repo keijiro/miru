@@ -1,20 +1,11 @@
-import { Box, CircleAlert, Glasses, Maximize, RefreshCw, X } from 'lucide-react'
+import { CircleAlert, Glasses, Maximize, RefreshCw, X } from 'lucide-react'
 import { createRoot } from 'react-dom/client'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { fetchDirectory } from './media-api'
 import { WorkspaceScene } from './scene'
+import { uiColors, uiControlRadius, uiFontFamily, uiFontWeight } from './ui-style'
 import { Workspace } from './workspace'
 import './style.css'
-
-function Brand() {
-  return (
-    <div className="brand">
-      <span className="brand-mark"><Box size={22} strokeWidth={1.8} /></span>
-      <span className="brand-name">miru</span>
-      <span className="brand-caption">Media workspace</span>
-    </div>
-  )
-}
 
 function App({ workspace }: { workspace: Workspace }) {
   const state = useSyncExternalStore(workspace.subscribe, workspace.snapshot)
@@ -101,29 +92,24 @@ function App({ workspace }: { workspace: Workspace }) {
 
   return (
     <div className="app">
-      <header className="app-header">
-        <Brand />
-        <div className="app-actions">
-          <button type="button" className="fit-button" disabled={!ready || active || pending || !state.views.length}
-            onClick={() => scene.current?.fit()}><Maximize size={16} />Fit all</button>
-          <button type="button" className="vr-toggle" role="switch" aria-checked={active} aria-label="VR mode"
-            disabled={!ready || pending || (!available && !active)}
-            title={available ? 'Toggle VR mode' : 'VR sessions are unavailable in this browser'}
-            onClick={() => void toggleVr()}>
-            <Glasses size={20} /><span>VR mode</span><span className="switch-track" aria-hidden="true" />
-          </button>
-        </div>
-      </header>
       <main className="stage" ref={stage}>
         {sceneError && <p className="stage-error" role="alert">{sceneError}</p>}
       </main>
-      <footer className="workspace-footer">
-        <span>Click empty space to open a window</span>
-        <span className="desktop-hints">Hover edges to move or corners to resize · Alt + scroll for depth</span>
-        {state.storageError && <span role="alert">Autosave unavailable</span>}
-      </footer>
-      {error && <div className="app-notice" role="alert"><CircleAlert size={18} />{error}
-        <button type="button" className="icon-button" aria-label="Dismiss notification" onClick={() => setError('')}><X size={15} /></button>
+      <div className="app-actions">
+        <button type="button" className="control-button" disabled={!ready || active || pending || !state.views.length}
+          onClick={() => scene.current?.fit()}><Maximize size={16} />Fit all</button>
+        <button type="button" className="control-button" role="switch" aria-checked={active}
+          disabled={!ready || pending || (!available && !active)}
+          title={available ? 'Toggle VR mode' : 'VR sessions are unavailable in this browser'}
+          onClick={() => void toggleVr()}>
+          <Glasses size={18} />VR mode
+        </button>
+      </div>
+      {(error || state.storageError) && <div className="app-notices">
+        {state.storageError && <div className="app-notice" role="alert"><CircleAlert size={18} />Autosave unavailable</div>}
+        {error && <div className="app-notice" role="alert"><CircleAlert size={18} />{error}
+          <button type="button" className="icon-button" aria-label="Dismiss notification" onClick={() => setError('')}><X size={15} /></button>
+        </div>}
       </div>}
     </div>
   )
@@ -146,15 +132,19 @@ function Startup() {
   if (workspace) return <App workspace={workspace} />
   return (
     <div className="app">
-      <header className="app-header"><Brand /></header>
       <main className="boot">
-        <div className="empty-icon">{error ? <CircleAlert size={32} /> : <Box size={32} />}</div>
         <h1>{error ? 'Could not open the library' : 'Loading library…'}</h1>
         {error && <><p role="alert">{error}</p>
-          <button type="button" className="fit-button" onClick={() => setAttempt(attempt + 1)}><RefreshCw size={16} />Retry</button></>}
+          <button type="button" className="control-button" onClick={() => setAttempt(attempt + 1)}><RefreshCw size={16} />Retry</button></>}
       </main>
     </div>
   )
 }
+
+const { style } = document.documentElement
+for (const [name, color] of Object.entries(uiColors)) style.setProperty(`--ui-${name}`, color)
+style.setProperty('--ui-font-family', uiFontFamily)
+style.setProperty('--ui-font-weight', String(uiFontWeight))
+style.setProperty('--ui-control-radius', `${uiControlRadius}px`)
 
 createRoot(document.getElementById('root')!).render(<Startup />)

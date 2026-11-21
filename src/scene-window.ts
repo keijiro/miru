@@ -3,19 +3,16 @@ import {
   Quaternion, SRGBColorSpace, Texture, Vector3, VideoTexture, type Intersection, type Ray,
 } from 'three'
 import { mediaUrl, type DirectoryListing, type LibraryEntry } from './media-api'
+import { uiColors, uiControlRadius, uiFontFamily, uiFontWeight } from './ui-style'
 import {
   clamp, formatTime, limits, mediaOverflow, panned, resizedDimensions, viewHeight, windowDefaults,
   type MediaRuntime, type View, type Workspace,
 } from './workspace'
 
-const ink = '#eeeeee'
-const muted = '#b0b0b0'
-export const accent = '#dedede'
-const surface = '#232323'
-const line = '#484848'
+const strokeWidth = 1.5
 const uiPixelsPerMetre = 720 / windowDefaults.width
 const metres = (pixels: number) => pixels / uiPixelsPerMetre
-const gripThickness = metres(7)
+const gripThickness = metres(2)
 const gripOffset = metres(16)
 const gripInset = metres(13)
 const cornerLength = metres(37)
@@ -26,7 +23,7 @@ const backWidth = 114
 const backHeight = 52
 const backMargin = metres(24)
 const backReach = metres(5)
-const dimOpacity = 0.38
+const dimOpacity = 0.25
 const gripDirections = [
   [-1, 0], [1, 0], [0, -1], [0, 1],
   [-1, -1], [1, -1], [-1, 1], [1, 1],
@@ -36,12 +33,11 @@ const browserMargin = 30
 const cardSize = 186
 const columnGap = 14
 const rowGap = 10
-const gridTop = 105
-const compactHeaderExtra = 48
+const gridTop = 88
 const browserFooter = 74
 const browserMinimum = {
   minWidth: metres(383),
-  minHeight: metres(gridTop + compactHeaderExtra + cardSize + browserFooter),
+  minHeight: metres(gridTop + cardSize + browserFooter),
 }
 
 const seekX = 25
@@ -55,20 +51,23 @@ export interface Grab {
   finish?(commit: boolean): void
 }
 interface Grip {
+  kind: 'grip'
   x: -1 | 0 | 1
   y: -1 | 0 | 1
   horizontal?: Face
   vertical?: Face
 }
 type Affordance = Grip | 'back'
-export type WindowPart = Affordance | 'body' | 'controls'
+export type WindowPart = Affordance | ButtonArea | 'body' | 'controls'
 type Action = () => void
 interface ButtonArea {
+  kind: 'button'
   x: number
   y: number
   w: number
   h: number
   run: Action
+  highlight: Action
 }
 
 function face(group: Group, color: string | number, geometry = new PlaneGeometry()) {
@@ -78,7 +77,7 @@ function face(group: Group, color: string | number, geometry = new PlaneGeometry
 }
 
 function gripFace(group: Group) {
-  const mesh = face(group, accent)
+  const mesh = face(group, uiColors.accent)
   mesh.material.transparent = true
   mesh.material.depthWrite = false
   mesh.visible = false
@@ -117,6 +116,8 @@ class Panel {
   #context = this.#canvas.getContext('2d')!
   #texture?: CanvasTexture
   #buttons: ButtonArea[] = []
+  #hovered = new Set<string>()
+  #nextHovered = new Set<string>()
   readonly mesh: Face
   width = 0
   height = 0
@@ -154,7 +155,7 @@ class Panel {
     ctx.setTransform(width / this.width, 0, 0, height / this.height, 0, 0)
     if (this.transparent) ctx.clearRect(0, 0, this.width, this.height)
     else {
-      ctx.fillStyle = surface
+      ctx.fillStyle = uiColors.surface
       ctx.fillRect(0, 0, this.width, this.height)
     }
     this.#buttons = []
@@ -162,19 +163,36 @@ class Panel {
     this.#texture.needsUpdate = true
   }
 
-  button(label: string, x: number, y: number, w: number, h: number, run: Action, active = false) {
-    chip(this.#context, label, x, y, w, h, active)
-    this.action(x, y, w, h, run)
+  button(label: string, x: number, y: number, w: number, h: number, run: Action, active = false, key = label) {
+    flatButton(this.#context, label, x, y, w, h, this.fillFor(key, active))
+    if (active) outlineActiveButton(this.#context, x, y, w, h)
+    this.action(x, y, w, h, run, key)
   }
 
-  action(x: number, y: number, w: number, h: number, run: Action) {
-    this.#buttons.push({ x, y, w, h, run })
+  action(x: number, y: number, w: number, h: number, run: Action, key: string) {
+    this.#buttons.push({ kind: 'button', x, y, w, h, run, highlight: () => this.#nextHovered.add(key) })
   }
 
-  press(x: number, y: number) {
-    const button = this.#buttons.find(({ x: left, y: top, w, h }) => x >= left && x <= left + w && y >= top && y <= top + h)
-    button?.run()
-    return Boolean(button)
+  buttonAt(u: number, v: number) {
+    const x = u * this.width
+    const y = v * this.height
+    return this.#buttons.find(({ x: left, y: top, w, h }) => x >= left && x <= left + w && y >= top && y <= top + h)
+  }
+
+  fillFor(key: string, active = false) {
+    if (this.#hovered.has(key)) return uiColors.hover
+    return active ? uiColors.active : uiColors.control
+  }
+
+  updateHover() {
+    const changed = this.#hovered.size !== this.#nextHovered.size || [...this.#nextHovered].some(key => !this.#hovered.has(key))
+    if (changed) {
+      const previous = this.#hovered
+      this.#hovered = this.#nextHovered
+      this.#nextHovered = previous
+    }
+    this.#nextHovered.clear()
+    return changed
   }
 
   dispose() { this.#texture?.dispose() }
@@ -191,11 +209,20 @@ function rect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h:
   }
 }
 
+function outlineActiveButton(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
+  const inset = strokeWidth / 2
+  ctx.beginPath()
+  ctx.roundRect(x + inset, y + inset, w - strokeWidth, h - strokeWidth, uiControlRadius - inset)
+  ctx.strokeStyle = '#a0a0a0'
+  ctx.lineWidth = strokeWidth
+  ctx.stroke()
+}
+
 function text(
   ctx: CanvasRenderingContext2D, value: string, x: number, y: number,
-  size: number, color = ink, weight = 500, max = Infinity,
+  size: number, color = uiColors.text, max = Infinity,
 ) {
-  ctx.font = `${weight} ${size}px system-ui, sans-serif`
+  ctx.font = `${uiFontWeight} ${size}px ${uiFontFamily}`
   ctx.fillStyle = color
   ctx.textBaseline = 'middle'
   if (ctx.measureText(value).width > max) {
@@ -206,24 +233,27 @@ function text(
   ctx.fillText(value, x, y)
 }
 
-function chip(
+function flatButton(
   ctx: CanvasRenderingContext2D, label: string, x: number, y: number, w: number, h: number,
-  active = false, fontSize = 22,
+  fill: string, fontSize = 22,
 ) {
-  rect(ctx, x, y, w, h, active ? '#575757' : '#373737', 8)
+  rect(ctx, x, y, w, h, fill, uiControlRadius)
   ctx.textAlign = 'center'
-  text(ctx, label, x + w / 2, y + h / 2 + 1, fontSize, ink, 620, w - 8)
+  text(ctx, label, x + w / 2, y + h / 2 + 1, fontSize, uiColors.text, w - 8)
   ctx.textAlign = 'left'
 }
 
 function slider(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, progress: number) {
   const position = x + w * clamp(progress, 0, 1)
-  rect(ctx, x, y - 3, w, 6, line, 3)
-  rect(ctx, x, y - 3, position - x, 6, accent, 3)
-  ctx.fillStyle = accent
+  rect(ctx, x, y - 1, w, 2, uiColors.outline)
+  rect(ctx, x, y - 1, position - x, 2, uiColors.accent)
   ctx.beginPath()
-  ctx.arc(position, y, 8, 0, Math.PI * 2)
+  ctx.arc(position, y, 6, 0, Math.PI * 2)
+  ctx.fillStyle = uiColors.surface
   ctx.fill()
+  ctx.strokeStyle = uiColors.accent
+  ctx.lineWidth = strokeWidth
+  ctx.stroke()
 }
 
 function cropMedia(mesh: Face, view: View) {
@@ -269,15 +299,15 @@ function xyDrag(
 export class SceneWindow {
   readonly group = new Group()
   #view: View
-  #back = face(this.group, surface)
-  #screen = surround(this.group, surface)
+  #back = face(this.group, uiColors.surface)
+  #screen = surround(this.group, uiColors.surface)
   #media = face(this.group, 0xffffff)
   #hitbox = face(this.group, 0xffffff)
   #controls = new Panel(this.group)
   #message = new Panel(this.group)
   #returnButton = new Panel(this.group, true)
   #grips: Grip[] = gripDirections.map(([x, y]) => ({
-    x, y,
+    kind: 'grip', x, y,
     horizontal: y ? gripFace(this.group) : undefined,
     vertical: x ? gripFace(this.group) : undefined,
   }))
@@ -305,7 +335,7 @@ export class SceneWindow {
     button.material.polygonOffsetFactor = -1
     button.material.polygonOffsetUnits = -1
     this.#layout()
-    this.#returnButton.paint(ctx => chip(ctx, '← Back', 0, 0, backWidth, backHeight, true, 26))
+    this.#returnButton.paint(ctx => flatButton(ctx, '← Back', 0, 0, backWidth, backHeight, uiColors.active, 26))
   }
 
   get id() { return this.#view.id }
@@ -373,7 +403,7 @@ export class SceneWindow {
       this.#lastMessage = messageSignature
       this.#message.paint(ctx => {
         ctx.textAlign = 'center'
-        text(ctx, message, messageWidth / 2, 33, 23, muted, 500, messageWidth - 16)
+        text(ctx, message, messageWidth / 2, 33, 23, uiColors.muted, messageWidth - 16)
         ctx.textAlign = 'left'
       })
     }
@@ -381,8 +411,8 @@ export class SceneWindow {
   }
 
   part(hit: Hit): WindowPart | undefined {
-    if (hit.object === this.#controls.mesh) return 'controls'
     const uv = hit.uv!
+    if (hit.object === this.#controls.mesh) return this.#controls.buttonAt(uv.x, 1 - uv.y) ?? 'controls'
     const { width, height } = this.#size
     const x = (uv.x - 0.5) * this.#hitbox.scale.x
     const y = (uv.y - 0.5) * this.#hitbox.scale.y
@@ -394,17 +424,23 @@ export class SceneWindow {
     const dy = Math.abs(y) - height / 2
     const nearX = dx >= -gripInset
     const nearY = dy >= -gripInset
-    if (!nearX && !nearY) return 'body'
+    if (!nearX && !nearY) {
+      if (this.#browser?.mesh.visible) return this.#browser.buttonAt(x / width + 0.5, 0.5 - y / height) ?? 'body'
+      return 'body'
+    }
     const xSide = nearX || dx >= -cornerLength ? Math.sign(x) : 0
     const ySide = nearY || dy >= -cornerLength ? Math.sign(y) : 0
     return this.#grips.find(grip => grip.x === xSide && grip.y === ySide)
   }
 
   highlight(part: WindowPart) {
-    if (part === 'back' || typeof part !== 'string') this.#highlighted.add(part)
+    if (part === 'back' || (typeof part === 'object' && part.kind === 'grip')) this.#highlighted.add(part)
+    else if (typeof part === 'object') part.highlight()
   }
 
   updateAffordances() {
+    this.#browser?.updateHover()
+    if (this.#controls.updateHover()) this.#lastControls = ''
     const visible = this.#highlighted.size > 0
     for (const grip of this.#grips) {
       const opacity = this.#highlighted.has(grip) ? 1 : dimOpacity
@@ -425,7 +461,11 @@ export class SceneWindow {
 
   press(part: WindowPart, hit: Hit, ray: Ray) {
     this.#focus()
-    if (typeof part !== 'string') {
+    if (typeof part === 'object') {
+      if (part.kind === 'button') {
+        part.run()
+        return
+      }
       return part.x && part.y ? this.#resize(hit, part.x, part.y) : this.#move(hit)
     }
     if (part === 'body') return this.#body(hit)
@@ -493,21 +533,21 @@ export class SceneWindow {
       const seekWidth = width - 2 * seekX
       const fraction = (t: number) => media.duration ? t / media.duration : 0
       slider(ctx, seekX, seekY, seekWidth, fraction(media.time))
-      if (view.loopStart) rect(ctx, seekX + seekWidth * fraction(view.loopStart), seekY - 8, 3, 16, ink)
-      if (view.loopEnd !== null) rect(ctx, seekX + seekWidth * fraction(view.loopEnd), seekY - 8, 3, 16, ink)
+      if (view.loopStart) rect(ctx, seekX + seekWidth * fraction(view.loopStart), seekY - 8, strokeWidth, 16, uiColors.text)
+      if (view.loopEnd !== null) rect(ctx, seekX + seekWidth * fraction(view.loopEnd), seekY - 8, strokeWidth, 16, uiColors.text)
       const compact = width < compactControlsWidth
       const gap = compact ? 6 : 15
       const muteX = width - (compact ? 6 : 25) - 130
       const endX = muteX - gap - 77
       const startX = endX - gap - 77
       const loopY = compact ? 91 : 40
-      panel.button(media.playing ? 'Ⅱ' : '▶', 19, 40, 64, 43, () => runtime.togglePlayback())
-      text(ctx, `${formatTime(media.time)} / ${formatTime(media.duration)}`, 98, 62, 21, muted, 550,
+      panel.button(media.playing ? 'Ⅱ' : '▷', 19, 40, 64, 43, () => runtime.togglePlayback(), false, 'playback')
+      text(ctx, `${formatTime(media.time)} / ${formatTime(media.duration)}`, 98, 62, 21, uiColors.muted,
         (compact ? width - 16 : startX - 12) - 98)
       panel.button('[ A', startX, loopY, 77, 43, () => runtime.mark('start'), view.loopStart > 0)
       panel.button('B ]', endX, loopY, 77, 43, () => runtime.mark('end'), view.loopEnd !== null)
       panel.button(view.muted ? 'Unmute' : 'Mute', muteX, loopY, 130, 43,
-        () => this.workspace.patch(view.id, { muted: !view.muted }), !view.muted)
+        () => this.workspace.patch(view.id, { muted: !view.muted }), !view.muted, 'audio')
     })
   }
 
@@ -567,13 +607,6 @@ export class SceneWindow {
 
   #body(hit: Hit) {
     const view = this.#view
-    if (!view.media) {
-      const local = this.group.worldToLocal(hit.point.clone())
-      const { width, height } = this.#size
-      this.#browser?.press(local.x / width + 0.5, 0.5 - local.y / height)
-      return
-    }
-
     const runtime = this.#runtime
     if (!runtime) return
     const overflow = mediaOverflow(view)
@@ -595,7 +628,6 @@ export class SceneWindow {
     const { width, height } = panel
     const x = hit.uv!.x * width
     const y = (1 - hit.uv!.y) * height
-    if (panel.press(x, y)) return
     const media = runtime.snapshot()
     if (Math.abs(y - seekY) > 15 || media.duration <= 0 || x < seekX - 15 || x > width - seekX + 15) return
     const plane = panelPlane(hit.point, this.group.quaternion)
@@ -610,6 +642,8 @@ export class SceneWindow {
     return { update }
   }
 }
+
+type BrowserEntry = LibraryEntry | { kind: 'up'; path: string; name: 'Up' }
 
 class FileBrowser {
   #panel: Panel
@@ -632,8 +666,12 @@ class FileBrowser {
   // Use the first item of the current page throughout the drag, even if the grid reflows several times.
   startResize() { this.#pageAnchor -= this.#pageAnchor % this.#pageSize }
 
-  press(u: number, v: number) {
-    this.#panel.press(u * this.#panel.width, v * this.#panel.height)
+  buttonAt(u: number, v: number) {
+    return this.#panel.buttonAt(u, v)
+  }
+
+  updateHover() {
+    if (this.#panel.updateHover()) this.#dirty = true
   }
 
   sync({ listing, busy, error }: View['browser'], immersive: boolean) {
@@ -645,56 +683,51 @@ class FileBrowser {
     }
     const panel = this.#panel
     const { width, height } = panel
-    const compact = width < (immersive ? 618 : 530)
-    const headerExtra = compact ? compactHeaderExtra : 0
-    const firstRowY = gridTop + headerExtra
     const innerWidth = width - 2 * browserMargin
     const columns = Math.floor((innerWidth + columnGap) / (cardSize + columnGap))
-    const rows = Math.floor((height - firstRowY - browserFooter + rowGap) / (cardSize + rowGap))
+    const rows = Math.floor((height - gridTop - browserFooter + rowGap) / (cardSize + rowGap))
+    const parentCardCount = listing.path ? 1 : 0
+    const cardCount = listing.entries.length + parentCardCount
     const pageSize = columns * rows
     this.#pageSize = pageSize
-    this.#pageAnchor = Math.min(this.#pageAnchor, Math.max(0, listing.entries.length - 1))
+    this.#pageAnchor = Math.min(this.#pageAnchor, Math.max(0, cardCount - 1))
     const page = Math.floor(this.#pageAnchor / pageSize)
-    const pageCount = Math.max(1, Math.ceil(listing.entries.length / pageSize))
+    const pageCount = Math.max(1, Math.ceil(cardCount / pageSize))
     const signature = JSON.stringify([width, height, busy, error, page, immersive])
     if (!this.#dirty && signature === this.#signature) return
     this.#signature = signature
     this.#dirty = false
     panel.paint(ctx => {
-      const parent = listing.path.split('/').slice(0, -1).join('/')
-      if (listing.path) {
-        panel.button('Root', browserMargin, 14, 66, 38, () => void this.workspace.navigate(this.id, ''))
-        panel.button('Up', 105, 14, 55, 38, () => void this.workspace.navigate(this.id, parent))
-      }
       const path = listing.path ? `${listing.rootName} / ${listing.path}` : listing.rootName
-      const pathX = listing.path ? 176 : browserMargin
       const right = width - browserMargin
-      const closeX = right - 78
+      const closeWidth = 78
+      const closeX = right - closeWidth
       const exitX = closeX - 99
-      const refreshX = (immersive ? exitX : closeX) - 107
-      const pathRight = compact ? right : refreshX - 10
-      text(ctx, path, pathX, 33, 22, muted, 560, pathRight - pathX)
-      panel.button('Refresh', refreshX, 14 + headerExtra, 98, 38, () => void this.workspace.navigate(this.id, listing.path))
-      if (immersive) panel.button('Exit VR', exitX, 14 + headerExtra, 90, 38, this.end)
-      panel.button('Close', closeX, 14 + headerExtra, 78, 38, () => this.workspace.close(this.id))
-      rect(ctx, browserMargin, 63 + headerExtra, innerWidth, 2, line)
-      if (error || busy) {
-        text(ctx, error || 'Loading…', browserMargin, 86 + headerExtra, 20, error ? ink : muted, 520, innerWidth)
+      const pathRight = (immersive ? exitX : closeX) - 10
+      text(ctx, path, browserMargin, 33, 22, uiColors.muted, pathRight - browserMargin)
+      if (immersive) panel.button('Exit VR', exitX, 14, 90, 38, this.end)
+      panel.button('Close', closeX, 14, closeWidth, 38, () => this.workspace.close(this.id))
+
+      const status = error || (busy ? 'Loading…' : !listing.entries.length ? 'No media in this folder.' : '')
+      if (status) text(ctx, status, browserMargin, 68, 20, error ? uiColors.text : uiColors.muted, innerWidth)
+
+      const up: BrowserEntry | undefined = listing.path ? {
+        kind: 'up', name: 'Up', path: listing.path.slice(0, Math.max(0, listing.path.lastIndexOf('/'))),
+      } : undefined
+      const first = page * pageSize
+      const end = Math.min(first + pageSize, cardCount)
+      for (let index = first; index < end; index++) {
+        const slot = index - first
+        const x = browserMargin + slot % columns * (cardSize + columnGap)
+        const y = gridTop + Math.floor(slot / columns) * (cardSize + rowGap)
+        this.#card(ctx, index === 0 && up ? up : listing.entries[index - parentCardCount], x, y)
       }
-      if (!listing.entries.length && !busy && !error) {
-        text(ctx, 'No media in this folder.', browserMargin, firstRowY + 17, 23, muted, 520, innerWidth)
-      }
-      listing.entries.slice(page * pageSize, (page + 1) * pageSize).forEach((item, i) => {
-        const x = browserMargin + i % columns * (cardSize + columnGap)
-        const y = firstRowY + Math.floor(i / columns) * (cardSize + rowGap)
-        this.#card(ctx, item, x, y)
-      })
       const footerY = height - 65
       if (page > 0) panel.button('Previous', browserMargin, footerY, 112, 36, () => { this.#pageAnchor = (page - 1) * pageSize })
       if (page + 1 < pageCount) panel.button('Next', right - 112, footerY, 112, 36, () => { this.#pageAnchor = (page + 1) * pageSize })
       if (pageCount > 1) {
         ctx.textAlign = 'center'
-        text(ctx, `${page + 1} / ${pageCount}`, width / 2, footerY + 19, 20, muted, 500, innerWidth - 240)
+        text(ctx, `${page + 1} / ${pageCount}`, width / 2, footerY + 19, 20, uiColors.muted, innerWidth - 240)
         ctx.textAlign = 'left'
       }
     })
@@ -706,15 +739,33 @@ class FileBrowser {
     this.#panel.dispose()
   }
 
-  #card(ctx: CanvasRenderingContext2D, item: LibraryEntry, x: number, y: number) {
-    rect(ctx, x, y, cardSize, cardSize, line, 8)
-    rect(ctx, x + 2, y + 2, cardSize - 4, cardSize - 4, '#2e2e2e', 7)
-    text(ctx, item.name, x + 12, y + cardSize - 17, 22, ink, 550, cardSize - 24)
-    if (item.kind === 'folder') {
-      const iconX = x + (cardSize - 67) / 2
-      rect(ctx, iconX, y + 54, 41, 16, '#858585', 5)
-      rect(ctx, iconX, y + 64, 67, 42, '#b5b5b5', 5)
-      this.#panel.action(x, y, cardSize, cardSize, () => void this.workspace.navigate(this.id, item.path))
+  #card(ctx: CanvasRenderingContext2D, item: BrowserEntry, x: number, y: number) {
+    const key = `entry:${item.path}`
+    rect(ctx, x, y, cardSize, cardSize, this.#panel.fillFor(key), 6)
+    text(ctx, item.name, x + 12, y + cardSize - 17, 22, uiColors.text, cardSize - 24)
+    if (item.kind === 'folder' || item.kind === 'up') {
+      ctx.beginPath()
+      if (item.kind === 'up') {
+        const center = x + cardSize / 2
+        ctx.moveTo(center, y + 104)
+        ctx.lineTo(center, y + 56)
+        ctx.moveTo(center - 18, y + 74)
+        ctx.lineTo(center, y + 56)
+        ctx.lineTo(center + 18, y + 74)
+      } else {
+        const iconX = x + (cardSize - 62) / 2
+        ctx.moveTo(iconX, y + 105)
+        ctx.lineTo(iconX, y + 55)
+        ctx.lineTo(iconX + 24, y + 55)
+        ctx.lineTo(iconX + 34, y + 65)
+        ctx.lineTo(iconX + 62, y + 65)
+        ctx.lineTo(iconX + 62, y + 105)
+        ctx.closePath()
+      }
+      ctx.strokeStyle = uiColors.muted
+      ctx.lineWidth = strokeWidth
+      ctx.stroke()
+      this.#panel.action(x, y, cardSize, cardSize, () => void this.workspace.navigate(this.id, item.path), key)
       return
     }
     let image = this.#images.get(item.path)
@@ -726,14 +777,14 @@ class FileBrowser {
     }
     const destW = cardSize - 16
     const destH = cardSize - 42
-    rect(ctx, x + 8, y + 8, destW, destH, '#3a3a3a', 4)
+    rect(ctx, x + 8, y + 8, destW, destH, uiColors.active, 4)
     if (image.complete && image.naturalWidth) {
       const ratio = Math.min(destW / image.naturalWidth, destH / image.naturalHeight)
       const w = image.naturalWidth * ratio
       const h = image.naturalHeight * ratio
       ctx.drawImage(image, x + 8 + (destW - w) / 2, y + 8 + (destH - h) / 2, w, h)
     }
-    if (item.kind === 'video') chip(ctx, '▶', x + cardSize - 52, y + destH - 30, 36, 30)
-    this.#panel.action(x, y, cardSize, cardSize, () => this.workspace.open(this.id, item))
+    if (item.kind === 'video') flatButton(ctx, '▷', x + cardSize - 52, y + destH - 30, 36, 30, uiColors.control)
+    this.#panel.action(x, y, cardSize, cardSize, () => this.workspace.open(this.id, item), key)
   }
 }

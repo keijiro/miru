@@ -3,14 +3,14 @@ import {
   Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
   SphereGeometry, Vector2, Vector3, WebGLRenderer, type Ray, type XRTargetRaySpace,
 } from 'three'
-import { accent, SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
+import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
+import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
 
 const controllerSmoothingTime = 0.035 // Seconds
 const cameraFov = 55
 const fogStart = 7
 const fogFalloff = 18
-const background = '#161616'
 
 interface PickedPart {
   panel: SceneWindow
@@ -32,12 +32,12 @@ interface Pointer {
 export class WorkspaceScene {
   #renderer: WebGLRenderer
   #scene = new Scene()
-  #fog = new Fog(background, fogStart, fogStart + fogFalloff)
+  #fog = new Fog(uiColors.background, fogStart, fogStart + fogFalloff)
   #xrCamera = new PerspectiveCamera(cameraFov, 1, 0.04, 80)
   #desktopCamera = this.#xrCamera.clone()
   #headPosition = new Vector3()
   #needsDesktopFit = true
-  #floor = new GridHelper(70, 70, '#3b3b3b', '#292929')
+  #floor = new GridHelper(70, 70, uiColors.active, uiColors.control)
   #windows = new Map<string, SceneWindow>()
   #pointers: Pointer[]
   #raycaster = new Raycaster()
@@ -66,7 +66,7 @@ export class WorkspaceScene {
     })
     this.#resize.observe(container)
 
-    this.#scene.background = new Color(background)
+    this.#scene.background = new Color(uiColors.background)
     this.#scene.fog = this.#fog
     this.#floor.position.y = -1.58
     this.#scene.add(this.#floor)
@@ -242,11 +242,11 @@ export class WorkspaceScene {
     if (picked) {
       const { panel, part } = picked
       panel.highlight(part)
-      if (typeof part !== 'string') {
+      if (typeof part === 'object' && part.kind === 'grip') {
         cursor = part.x && part.y
           ? (part.x === part.y ? 'nesw-resize' : 'nwse-resize')
           : (this.#mouse ? 'grabbing' : 'grab')
-      } else if (part === 'back') cursor = 'pointer'
+      } else if (part === 'back' || typeof part === 'object') cursor = 'pointer'
     }
     const style = this.#renderer.domElement.style
     if (style.cursor !== cursor) style.cursor = cursor
@@ -288,10 +288,10 @@ export class WorkspaceScene {
     const controller = this.#renderer.xr.getController(index)
     const geometry = new BufferGeometry()
     geometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 0, 0, -1]), 3))
-    const beam = new Line(geometry, new LineBasicMaterial({ color: accent, transparent: true, opacity: 0.8 }))
+    const beam = new Line(geometry, new LineBasicMaterial({ color: uiColors.accent, transparent: true, opacity: 0.8 }))
     beam.frustumCulled = false
     beam.visible = false
-    const cursor = new Mesh(new SphereGeometry(0.005, 12, 8), new MeshBasicMaterial({ color: accent, toneMapped: false }))
+    const cursor = new Mesh(new SphereGeometry(0.005, 12, 8), new MeshBasicMaterial({ color: uiColors.accent, toneMapped: false }))
     cursor.visible = false
     this.#scene.add(beam, cursor)
     const pointer: Pointer = { controller, beam, cursor }

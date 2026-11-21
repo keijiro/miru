@@ -2,6 +2,8 @@
 
 miru is a local media viewer for arranging and viewing multiple images and videos in one space. It is designed for WebXR and has a desktop fallback that uses the same WebGL 2 workspace.
 
+See the [UI design guidelines](UI-DESIGN.md) for the shared desktop and VR styles and interaction rules.
+
 ## Getting started
 
 You need Node.js 20.19 or later in the 20.x series, or Node.js 22.12 or later. Use the pnpm version pinned in `package.json`. Both `ffmpeg` and `ffprobe` must be on your `PATH`.
@@ -42,7 +44,7 @@ The desktop camera uses perspective projection. Windows turn to face it just as 
 | --- | --- |
 | Open a window | Click empty space in the workspace. |
 | View a file | Select an image or video in the window's file browser. |
-| Browse a folder | Select a folder tile. Use **Previous** and **Next** to change pages, and **Root** or **Up** to go back. |
+| Browse a folder | Select a folder tile. Use **Previous** and **Next** to change pages, or select the **Up** tile to open the parent folder. |
 | Return to the file browser | Hover near the upper-left corner inside the media window to reveal **Back**, then click it. |
 | Close a window | Click **Close** in the file browser. |
 | Move a view | Hover near any edge and drag the bar that appears. |
