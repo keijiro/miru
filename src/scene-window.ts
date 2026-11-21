@@ -317,7 +317,6 @@ export class SceneWindow {
   #runtime?: MediaRuntime
   #texture?: Texture
   #videoMask?: Mesh<PlaneGeometry, ShaderMaterial>
-  #nativeVideo = false
   #immersive = true
   #lastControls = ''
   #lastMessage = ''
@@ -347,7 +346,7 @@ export class SceneWindow {
   }
 
   get videoPlane() {
-    return this.#nativeVideo && this.#media.visible ? this.#media : undefined
+    return this.#immersive && this.#runtime?.video && this.#media.visible ? this.#media : undefined
   }
 
   setVideoLayer(material?: ShaderMaterial, message = 'Loading…') {
@@ -379,14 +378,14 @@ export class SceneWindow {
     }
   }
 
-  sync(view: View, runtime: MediaRuntime | undefined, immersive: boolean, nativeVideo: boolean) {
-    nativeVideo &&= Boolean(runtime?.video)
+  sync(view: View, runtime: MediaRuntime | undefined, immersive: boolean) {
+    const nativeVideo = immersive && Boolean(runtime?.video)
     const runtimeChanged = runtime !== this.#runtime
+    const modeChanged = immersive !== this.#immersive
     const createBrowser = !runtime && !this.#browser
     if (createBrowser) this.#browser = new FileBrowser(this.group, this.workspace, view.id, this.end)
-    if (runtimeChanged || nativeVideo !== this.#nativeVideo) {
+    if (runtimeChanged || (modeChanged && runtime?.video)) {
       this.#runtime = runtime
-      this.#nativeVideo = nativeVideo
       this.#texture?.dispose()
       this.#texture = undefined
       this.#media.material.map = null
@@ -394,7 +393,7 @@ export class SceneWindow {
       if (this.#videoMask) this.#videoMask.visible = false
       this.#lastControls = ''
     }
-    const relayout = view !== this.#view || runtimeChanged || createBrowser || immersive !== this.#immersive
+    const relayout = view !== this.#view || runtimeChanged || createBrowser || modeChanged
     if (relayout) {
       this.#view = view
       this.#immersive = immersive

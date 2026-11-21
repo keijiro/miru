@@ -16,53 +16,40 @@ export class Panorama {
     vertexShader: `void main() { vec3 transformed = position; ${projectHemisphere} }`,
     fragmentShader: 'void main() { gl_FragColor = vec4(0.0); }',
   })
-  #eyes = [this.#hemisphere, this.#hemisphere.clone()]
-    .map(geometry => new Mesh<SphereGeometry, MeshBasicMaterial | ShaderMaterial>(geometry, this.#material))
-  #immersive = false
-  #nativeYaw: number | null = null
+  #mesh = new Mesh<SphereGeometry, MeshBasicMaterial | ShaderMaterial>(this.#hemisphere, this.#material)
 
   constructor(scene: Scene) {
     this.#material.onBeforeCompile = shader => {
       shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', projectHemisphere)
     }
-    for (const [index, eye] of this.#eyes.entries()) {
-      eye.layers.set(index + 1) // Three.js uses layers 1 and 2 for the left and right XR eyes.
-      eye.renderOrder = -1
-      eye.frustumCulled = false
-      eye.visible = false
-      scene.add(eye)
-    }
+    this.#mesh.renderOrder = -1
+    this.#mesh.frustumCulled = false
+    this.#mesh.visible = false
+    scene.add(this.#mesh)
   }
 
-  sync(texture: VideoTexture | undefined, yaw: number | null, nativeYaw: number | null) {
-    const immersive = yaw !== null
+  sync(texture: VideoTexture | undefined, nativeYaw: number | null) {
+    this.#mesh.visible = Boolean(texture) || nativeYaw !== null
+    this.#mesh.material = nativeYaw === null ? this.#material : this.#mask
+    this.#mesh.rotation.y = nativeYaw ?? 0
     const map = texture ?? null
-    if (map === this.#material.map && immersive === this.#immersive && nativeYaw === this.#nativeYaw) return
-    this.#immersive = immersive
-    this.#nativeYaw = nativeYaw
+    if (map === this.#material.map) return
     this.#material.map = map
     this.#material.needsUpdate = true
-    for (const [index, eye] of this.#eyes.entries()) {
-      eye.visible = Boolean(texture) || nativeYaw !== null
-      eye.material = nativeYaw === null ? this.#material : this.#mask
-      eye.rotation.y = nativeYaw ?? yaw ?? 0
-      if (!texture) continue
-      // Reverse the hemisphere's U axis for an inside view, then keep filtering within this eye's half.
-      const inset = 0.5 / texture.image.videoWidth
-      const uv = eye.geometry.getAttribute('uv')
-      for (let i = 0; i < uv.count; i++) {
-        const u = 1 - this.#uv.getX(i)
-        uv.setX(i, index / 2 + Math.min(0.5 - inset, Math.max(inset, u / 2)))
-      }
-      uv.needsUpdate = true
+    if (!texture) return
+    // Reverse U for the inside view and keep filtering within the left eye's half on desktop.
+    const inset = 0.5 / texture.image.videoWidth
+    const uv = this.#hemisphere.getAttribute('uv')
+    for (let i = 0; i < uv.count; i++) {
+      const u = (1 - this.#uv.getX(i)) / 2
+      uv.setX(i, Math.min(0.5 - inset, Math.max(inset, u)))
     }
+    uv.needsUpdate = true
   }
 
   dispose() {
-    for (const eye of this.#eyes) {
-      eye.removeFromParent()
-      eye.geometry.dispose()
-    }
+    this.#mesh.removeFromParent()
+    this.#hemisphere.dispose()
     this.#material.dispose()
     this.#mask.dispose()
   }

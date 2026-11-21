@@ -7,7 +7,7 @@ import { Panorama } from './panorama'
 import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type WindowPart } from './scene-window'
 import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
-import { isQuestBrowser, videoLayerUnavailable, XrVideoLayers } from './xr-video-layers'
+import { videoLayerUnavailable, XrVideoLayers } from './xr-video-layers'
 
 const controllerSmoothingTime = 0.035 // Seconds
 const cameraFov = 55
@@ -54,7 +54,6 @@ export class WorkspaceScene {
   #resize: ResizeObserver
   #events = new AbortController()
   #previousFrame = 0
-  #questBrowser = isQuestBrowser()
   #videoLayers?: XrVideoLayers
 
   constructor(private readonly workspace: Workspace, container: HTMLElement) {
@@ -65,7 +64,6 @@ export class WorkspaceScene {
     this.#renderer = new WebGLRenderer({ canvas, context })
     this.#renderer.xr.enabled = true
     this.#renderer.xr.setReferenceSpaceType('local')
-    this.#desktopCamera.layers.enable(1) // Show the left half of the panorama on desktop.
     canvas.setAttribute('aria-label', 'Media workspace')
     container.append(canvas)
     this.#resize = new ResizeObserver(([entry]) => {
@@ -387,7 +385,7 @@ export class WorkspaceScene {
       if (panel.runtime !== runtime) this.#cancelGrabs(panel)
       // Desktop windows created at the same depth still need a deterministic stacking order.
       panel.group.renderOrder = immersive ? 0 : selected === view.id ? views.length + 1 : index + 1
-      panel.sync(view, runtime, immersive, immersive && this.#questBrowser)
+      panel.sync(view, runtime, immersive)
       panel.group.lookAt(eye)
       if (!immersive) fogNear = Math.max(fogNear, eye.z - view.z + panel.radius)
       for (const target of panel.targets) if (target.visible) this.#targets.set(target, panel)
@@ -429,15 +427,15 @@ export class WorkspaceScene {
     for (const panel of this.#windows.values()) panel.updateAffordances()
     const { panorama } = this.workspace.snapshot()
     let nativePanorama: number | null = null
-    if (immersive && this.#questBrowser) {
+    if (immersive) {
       if (this.#videoLayers) {
         nativePanorama = this.#videoLayers.sync(this.#windows.values(), pose, panorama, this.#headYaw)
       } else {
         for (const panel of this.#windows.values()) if (panel.videoPlane) panel.setVideoLayer(undefined, videoLayerUnavailable)
       }
     }
-    const texture = panorama === null ? undefined : this.#windows.get(panorama)?.videoTexture
-    this.#panorama.sync(texture, immersive ? this.#headYaw : null, nativePanorama)
+    const texture = !immersive && panorama !== null ? this.#windows.get(panorama)?.videoTexture : undefined
+    this.#panorama.sync(texture, nativePanorama)
     this.#floor.visible = !texture && nativePanorama === null
     this.#renderer.render(this.#scene, immersive ? this.#xrCamera : this.#desktopCamera)
   }

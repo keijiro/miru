@@ -4,25 +4,11 @@ import {
 } from 'three'
 import type { Face, SceneWindow } from './scene-window'
 
-// Quest treats these quad dimensions as half extents. https://github.com/immersive-web/layers/issues/324
-const questQuadExtent = 0.5
 const viewport = new Box2(new Vector2(-1, -1), new Vector2(1, 1))
 const cornerSigns = [-1, 1]
 
 export const videoLayerUnavailable = 'Native video is unavailable'
 const videoLayerLimit = 'Video layer limit reached'
-
-export function isQuestBrowser() {
-  return /\bOculusBrowser\//.test(navigator.userAgent)
-}
-
-export function questVideoLayerOptions(): XRSessionInit | undefined {
-  // Limit the Quest-specific geometry workaround to its browser and check that the API is available.
-  if (isQuestBrowser() && typeof XRMediaBinding === 'function' &&
-      typeof XRWebGLBinding !== 'undefined' && typeof XRWebGLBinding.prototype.createProjectionLayer === 'function') {
-    return { optionalFeatures: ['layers'] }
-  }
-}
 
 interface Plane {
   center: Vector3
@@ -61,6 +47,8 @@ export class XrVideoLayers {
   #available = true
   #limit: number
   #projectionAlpha: boolean
+  // Quest treats quad dimensions as half extents. https://github.com/immersive-web/layers/issues/324
+  #quadScale = /\bOculusBrowser\//.test(navigator.userAgent) ? 0.5 : 1
   #corner = new Vector3()
   #clip = new Vector4()
   #ndc = new Vector2()
@@ -89,8 +77,7 @@ export class XrVideoLayers {
   })
 
   static create(session: XRSession, base: XRWebGLLayer | XRProjectionLayer | null, space: XRReferenceSpace | null) {
-    if (!questVideoLayerOptions() || !session.enabledFeatures?.includes('layers') ||
-        !base || !('blendTextureSourceAlpha' in base) || !space) return
+    if (typeof XRMediaBinding !== 'function' || !base || !('blendTextureSourceAlpha' in base) || !space) return
     try {
       return new XrVideoLayers(session, base, space, new XRMediaBinding(session))
     } catch {
@@ -229,7 +216,7 @@ export class XrVideoLayers {
     const transform = new XRRigidTransform({ x, y, z }, {
       x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w,
     })
-    const layout = { transform, width: plane.width * questQuadExtent, height: plane.height * questQuadExtent }
+    const layout = { transform, width: plane.width * this.#quadScale, height: plane.height * this.#quadScale }
     try {
       if (entry) {
         Object.assign(entry.layer, layout)

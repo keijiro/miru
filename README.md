@@ -62,7 +62,7 @@ Images and videos fill their views while keeping their aspect ratio. miru automa
 
 Panorama projection expects a 180° equirectangular video packed side by side, with the left eye first. In VR, the panorama centers on your heading when you enable it and stays in place as you look around. On desktop, it shows the left-eye image facing forward. The background and source window share playback, including pause, seek, and loops. Enabling another video switches the background to that video. Use **Back** in the source window to clear the projection, or toggle **180° Panorama** off.
 
-In Quest Browser VR, each visible video window uses a WebXR media layer. The workspace and an active panorama each use one layer as well. When the session reaches its layer limit, affected windows display a warning and show the video when a layer becomes available.
+In VR mode, video windows and the active panorama use WebXR media layers. A visible video window, the workspace, and an active panorama each use one layer. Video windows show a warning if the browser or XR runtime cannot provide media layers. If the session reaches its layer limit, affected windows show the video when a layer becomes available.
 
 ## WSL2 and Quest Pro
 
