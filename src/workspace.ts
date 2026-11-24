@@ -1,3 +1,4 @@
+import { MathUtils } from 'three'
 import { fetchDirectory, mediaUrl, type DirectoryListing, type MediaEntry } from './media-api'
 
 const minWidth = 0.24
@@ -483,7 +484,7 @@ export class Workspace {
 
   create(position: Pick<View, 'x' | 'y' | 'z'>) {
     const view: View = {
-      ...mediaDefaults, ...position, id: crypto.randomUUID(), media: null, directory: '', browser: this.#root,
+      ...mediaDefaults, ...position, id: MathUtils.generateUUID(), media: null, directory: '', browser: this.#root,
       width: windowDefaults.width, height: windowDefaults.height,
     }
     this.#publish({ views: [...this.#state.views, view], selected: view.id }, true)
