@@ -496,7 +496,7 @@ export class SceneWindow {
     return this.#immersive && this.#runtime?.video && this.#media.visible ? this.#media : undefined
   }
 
-  setVideoLayer(material?: ShaderMaterial, message?: string) {
+  setVideoLayer(material?: ShaderMaterial, fallback = false) {
     if (material) {
       if (!this.#videoMask) {
         this.#videoMask = new Mesh(this.#media.geometry, material)
@@ -506,13 +506,16 @@ export class SceneWindow {
     }
     if (this.#videoMask) this.#videoMask.visible = Boolean(material)
     if (!this.#media.visible) return
-    const frame = !material && message === undefined ? this.#runtime?.loopFrame : undefined
-    if (frame && !this.#media.material.visible) {
-      if (this.#texture) this.#texture.needsUpdate = true
-      else this.#setMediaTexture(new CanvasTexture(frame))
+    const video = fallback ? this.#runtime?.video : undefined
+    const frame = !material && !video ? this.#runtime?.loopFrame : undefined
+    if (video && !(this.#texture instanceof VideoTexture)) this.#setMediaTexture(new VideoTexture(video))
+    if (frame) {
+      if (this.#texture?.image !== frame) this.#setMediaTexture(new CanvasTexture(frame))
+      else if (!this.#media.material.visible) this.#texture.needsUpdate = true
     }
-    this.#media.material.visible = Boolean(frame)
-    this.#showMessage(material || frame ? '' : message ?? 'Loading…')
+    if (!video && this.#texture instanceof VideoTexture) this.#setMediaTexture(undefined)
+    this.#media.material.visible = Boolean(video || frame)
+    this.#showMessage(material || video || frame ? '' : 'Loading…')
   }
 
   get radius() {
@@ -560,9 +563,7 @@ export class SceneWindow {
     if (runtimeChanged || (modeChanged && runtime?.video)) {
       runtime?.setLoopFrameCapture(nativeVideo)
       this.#runtime = runtime
-      this.#texture?.dispose()
-      this.#texture = undefined
-      this.#media.material.map = null
+      this.#setMediaTexture(undefined)
       this.#media.material.visible = !nativeVideo
       if (this.#videoMask) this.#videoMask.visible = false
       this.#lastControls = ''
@@ -602,11 +603,14 @@ export class SceneWindow {
     if (this.#showControls) this.#paintControls(runtime)
   }
 
-  #setMediaTexture(texture: Texture) {
-    texture.colorSpace = SRGBColorSpace
-    texture.needsUpdate = true
+  #setMediaTexture(texture: Texture | undefined) {
+    this.#texture?.dispose()
+    if (texture) {
+      texture.colorSpace = SRGBColorSpace
+      texture.needsUpdate = true
+    }
     this.#texture = texture
-    this.#media.material.map = texture
+    this.#media.material.map = texture ?? null
     this.#media.material.needsUpdate = true
   }
 

@@ -36,7 +36,7 @@ Miru shows `e` when it resolves to the configured directory. Paths opened throug
 
 ## VR controls
 
-Connect your WebXR headset and select **VR mode**. Video playback in VR requires WebXR media layers.
+Connect your WebXR headset and select **VR mode**. Miru uses WebXR media layers when available and renders video with WebGL otherwise.
 
 - Aim at empty space and hold the trigger for half a second to open a file browser.
 - Drag a window’s edge with the trigger to move it or a corner to resize it. Move the thumbstick up or down while dragging an edge to adjust distance.

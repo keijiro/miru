@@ -3,12 +3,12 @@ import {
   Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Scene,
   SphereGeometry, Vector2, Vector3, WebGLRenderer, type Ray, type XRTargetRaySpace,
 } from 'three'
-import { Panorama, type XrPanorama } from './panorama'
+import { Panorama } from './panorama'
 import { WindowPreview } from './window-preview'
 import { SceneWindow, windowGripReach, type Face, type Grab, type Hit, type PanelOutline, type WindowPart } from './scene-window'
 import { uiColors } from './ui-style'
 import { clamp, limits, windowDefaults, type Workspace } from './workspace'
-import { videoLayerUnavailable, XrVideoLayers } from './xr-video-layers'
+import { XrVideoLayers } from './xr-video-layers'
 
 const controllerSmoothingTime = 0.035 // Seconds
 const cameraFov = 55
@@ -44,6 +44,8 @@ export class WorkspaceScene {
   #needsDesktopFit = true
   #floor = new GridHelper(70, 70, uiColors.active, uiColors.control)
   #panorama = new Panorama(this.#scene)
+  #panoramaVideo?: HTMLVideoElement
+  #panoramaYaw = 0
   #windows = new Map<string, SceneWindow>()
   #closingOutlines = new Set<PanelOutline>()
   #pointers: Pointer[]
@@ -103,6 +105,7 @@ export class WorkspaceScene {
     this.#previousFrame = 0
     this.#headPosition.set(0, 0, 0)
     this.#headYaw = 0
+    this.#panoramaVideo = undefined
     this.#needsDesktopFit = true
     await this.#renderer.xr.setSession(session)
     if (this.#renderer.xr.getSession() !== session) return
@@ -502,16 +505,19 @@ export class WorkspaceScene {
       this.#closingOutlines.delete(outline)
     }
     const { panorama } = this.workspace.snapshot()
-    let xrPanorama: XrPanorama | undefined
-    if (immersive) {
-      if (this.#videoLayers) {
-        xrPanorama = this.#videoLayers.sync(this.#windows.values(), pose, panorama, this.#headYaw)
-      } else {
-        for (const panel of this.#windows.values()) if (panel.videoPlane) panel.setVideoLayer(undefined, videoLayerUnavailable)
-      }
+    const panoramaPanel = panorama !== null ? this.#windows.get(panorama) : undefined
+    const panoramaVideo = immersive ? panoramaPanel?.runtime?.video : undefined
+    if (panoramaVideo !== this.#panoramaVideo) {
+      this.#panoramaVideo = panoramaVideo
+      this.#panoramaYaw = this.#headYaw
     }
-    const texture = !immersive && panorama !== null ? this.#windows.get(panorama)?.videoTexture : undefined
-    this.#floor.visible = !this.#panorama.sync(texture, xrPanorama)
+    if (immersive && !this.#videoLayers) {
+      for (const panel of this.#windows.values()) if (panel.videoPlane) panel.setVideoLayer(undefined, true)
+    }
+    const nativePanorama = immersive
+      ? this.#videoLayers?.sync(this.#windows.values(), pose, panorama, this.#panoramaYaw) : undefined
+    const texture = nativePanorama ? undefined : panoramaPanel?.videoTexture
+    this.#floor.visible = !this.#panorama.sync(texture, immersive ? this.#panoramaYaw : undefined, nativePanorama)
     this.#renderer.render(this.#scene, immersive ? this.#xrCamera : this.#desktopCamera)
   }
 

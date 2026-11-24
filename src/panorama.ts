@@ -3,8 +3,7 @@ import {
   type Scene, type VideoTexture,
 } from 'three'
 
-export interface XrPanorama {
-  yaw: number
+export interface NativePanorama {
   loopFrame?: HTMLCanvasElement
 }
 
@@ -42,28 +41,33 @@ export class Panorama {
     this.#rightEye.layers.set(2)
   }
 
-  sync(texture: VideoTexture | undefined, xr?: XrPanorama) {
-    const frame = xr?.loopFrame
-    if (!xr || (frame && this.#loopTexture?.image !== frame)) {
+  sync(texture: VideoTexture | undefined, yaw?: number, native?: NativePanorama) {
+    const frame = native?.loopFrame
+    if (!native || (frame && this.#loopTexture?.image !== frame)) {
       this.#loopTexture?.dispose()
       this.#loopTexture = undefined
     }
     const map = frame ? this.#loopTexture ??= new CanvasTexture(frame) : texture ?? null
-    this.#mesh.visible = Boolean(texture || xr)
-    this.#mesh.material = xr && !frame ? this.#mask : this.#material
-    this.#mesh.rotation.y = this.#rightEye.rotation.y = xr?.yaw ?? 0
-    this.#mesh.layers.set(frame ? 1 : 0)
-    this.#rightEye.visible = Boolean(frame)
+    const stereo = Boolean(frame || (texture && yaw !== undefined))
+    const changedEyes = stereo !== this.#rightEye.visible
+    this.#mesh.visible = Boolean(texture || native)
+    this.#mesh.material = native && !frame ? this.#mask : this.#material
+    this.#mesh.rotation.y = this.#rightEye.rotation.y = yaw ?? 0
+    this.#mesh.layers.set(stereo ? 1 : 0)
+    this.#rightEye.visible = stereo
+    if (map && (map !== this.#material.map || changedEyes)) {
+      const width = frame?.width ?? texture?.image.videoWidth
+      if (width) {
+        this.#setEyeUv(this.#hemisphere, width, 0)
+        if (stereo) this.#setEyeUv(this.#rightEye.geometry, width, 0.5)
+      }
+    }
     if (map !== this.#material.map) {
       this.#material.map = map
       this.#material.needsUpdate = true
       if (frame && map) {
         map.colorSpace = SRGBColorSpace
         map.needsUpdate = true
-        this.#setEyeUv(this.#hemisphere, frame.width, 0)
-        this.#setEyeUv(this.#rightEye.geometry, frame.width, 0.5)
-      } else if (texture) {
-        this.#setEyeUv(this.#hemisphere, texture.image.videoWidth, 0)
       }
     }
     return this.#mesh.visible
