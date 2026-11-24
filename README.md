@@ -20,6 +20,20 @@ The default library includes sample media. Open [http://localhost:5173](http://l
 
 To use your own media folder, set `mediaRoot` and restart the server. [miru.config.json](miru.config.json)
 
+A directory symlink directly under `mediaRoot` can point outside the library if you list its name and absolute target in `externalLinks`. For example, if `/var/www/html/e` points to `/mnt/e`, use this configuration and restart the server:
+
+```json
+{
+  "mediaRoot": "/var/www/html",
+  "thumbnailCache": "./.miru-cache",
+  "externalLinks": {
+    "e": "/mnt/e"
+  }
+}
+```
+
+Miru shows `e` when it resolves to the configured directory. Paths opened through `e` must resolve within that directory.
+
 ## VR controls
 
 Connect your WebXR headset and select **VR mode**. Video playback in VR requires WebXR media layers.

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, type Stats } from 'node:fs'
-import { mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,9 +45,24 @@ class HttpError extends Error {
   }
 }
 
+type LibraryScope = {
+  root: string
+  cache: string
+  externalLinks: ReadonlyMap<string, string>
+}
+
 function inside(root: string, path: string) {
   const rel = relative(root, path)
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+function validSegment(segment: string) {
+  return segment.length > 0 && !segment.startsWith('.') && !segment.includes('\0') &&
+    !segment.includes('/') && (sep !== '\\' || !segment.includes(sep))
+}
+
+function notFound() {
+  return new HttpError(404, 'The requested item could not be found.')
 }
 
 function hash(value: string) {
@@ -65,24 +80,50 @@ async function readConfig() {
     if (config.thumbnailCache !== undefined && (typeof config.thumbnailCache !== 'string' || !config.thumbnailCache.trim())) {
       throw new Error()
     }
+    const externalLinks = new Map<string, string>()
+    if (config.externalLinks !== undefined) {
+      if (!config.externalLinks || typeof config.externalLinks !== 'object' || Array.isArray(config.externalLinks)) {
+        throw new Error()
+      }
+      for (const [name, target] of Object.entries(config.externalLinks)) {
+        if (!validSegment(name) || typeof target !== 'string' || !isAbsolute(target) || target.includes('\0')) {
+          throw new Error()
+        }
+        externalLinks.set(name, resolve(target))
+      }
+    }
     return {
       root: resolve(dirname(configFile), config.mediaRoot),
       cache: resolve(dirname(configFile), config.thumbnailCache ?? '.miru-cache'),
+      externalLinks,
     }
   } catch {
-    throw new HttpError(503, 'Check mediaRoot and thumbnailCache in miru.config.json.')
+    throw new HttpError(503, 'Check mediaRoot, thumbnailCache, and externalLinks in miru.config.json.')
   }
 }
 
-async function resolveEntry(root: string, path: string) {
+async function resolveEntry({ root, cache, externalLinks }: LibraryScope, path: string) {
   const segments = path ? path.split('/') : []
-  if (segments.some(segment => !segment || segment.startsWith('.') || segment.includes('\0'))) {
-    throw new HttpError(404, 'The requested item could not be found.')
+  if (!segments.every(validSegment)) throw notFound()
+
+  let boundary = root
+  const configuredTarget = externalLinks.get(segments[0])
+  if (configuredTarget) {
+    const link = resolve(root, segments[0])
+    if (!inside(root, link) || !(await lstat(link).catch(() => undefined))?.isSymbolicLink()) throw notFound()
+    const [target, actual] = await Promise.all([
+      realpath(configuredTarget).catch(() => undefined),
+      realpath(link).catch(() => undefined),
+    ])
+    if (!target || actual !== target || !(await stat(target).catch(() => undefined))?.isDirectory()) throw notFound()
+    boundary = target
+    segments.shift()
   }
-  const requested = resolve(root, ...segments)
-  if (!inside(root, requested)) throw new HttpError(404, 'The requested item could not be found.')
+
+  const requested = resolve(boundary, ...segments)
+  if (!inside(boundary, requested)) throw notFound()
   const actual = await realpath(requested)
-  if (!inside(root, actual)) throw new HttpError(404, 'The requested item could not be found.')
+  if (!inside(boundary, actual) || inside(cache, actual)) throw notFound()
   return actual
 }
 
@@ -96,13 +137,15 @@ function sendJson(response: ServerResponse, status: number, value: unknown, head
 }
 
 async function listDirectory(
-  root: string, directory: string, path: string, samples: boolean, cache: string,
+  scope: LibraryScope, directory: string, path: string, samples: boolean,
 ): Promise<DirectoryListing> {
+  const { root, cache, externalLinks } = scope
   const entries = await Promise.all((await readdir(directory, { withFileTypes: true })).map(async dirent => {
     if (dirent.name.startsWith('.')) return
     const childPath = path ? `${path}/${dirent.name}` : dirent.name
     const link = dirent.isSymbolicLink()
-    const item = link ? await resolveEntry(root, childPath).catch(() => undefined) : resolve(directory, dirent.name)
+    const checkPath = link || (!path && externalLinks.has(dirent.name))
+    const item = checkPath ? await resolveEntry(scope, childPath).catch(() => undefined) : resolve(directory, dirent.name)
     if (!item || inside(cache, item)) return
     if (dirent.isDirectory()) return { kind: 'folder', name: dirent.name, path: childPath } as const
     if (!link && !dirent.isFile()) return
@@ -258,12 +301,12 @@ export function mediaLibrary(): Plugin {
       throw new HttpError(503, 'Set thumbnailCache to a location that does not contain the media folder.')
     }
     const path = url.searchParams.get('path') ?? ''
-    const file = await resolveEntry(root, path)
+    const scope = { root, cache, externalLinks: config.externalLinks }
+    const file = await resolveEntry(scope, path)
     const info = await stat(file)
-    if (inside(cache, file)) throw new HttpError(404, 'The requested item could not be found.')
 
     if (url.pathname === '/api/miru/library' && info.isDirectory()) {
-      const listing = await listDirectory(root, file, path, config.root === sampleRoot, cache)
+      const listing = await listDirectory(scope, file, path, config.root === sampleRoot)
       sendJson(response, 200, listing, request.method === 'HEAD')
       return
     }
@@ -282,7 +325,7 @@ export function mediaLibrary(): Plugin {
         return
       }
     }
-    throw new HttpError(404, 'The requested item could not be found.')
+    throw notFound()
   }
 
   function middleware(request: IncomingMessage, response: ServerResponse, next: () => void) {
@@ -308,8 +351,12 @@ export function mediaLibrary(): Plugin {
     async config() {
       const config = await readConfig().catch(() => null)
       if (!config) return
-      const deny = [config.root, config.cache]
-        .filter(path => !inside(path, project))
+      const paths = [config.root, config.cache, ...config.externalLinks.values()]
+      const [projectRealPath, ...canonical] = await Promise.all(
+        [project, ...paths].map(path => realpath(path).catch(() => path)),
+      )
+      const deny = [...new Set([...paths, ...canonical])]
+        .filter(path => !inside(path, project) && !inside(path, projectRealPath))
         .map(path => `${path.replaceAll(sep, '/')}/**`)
       return { server: { fs: { deny }, watch: { ignored: deny } } }
     },
