@@ -100,17 +100,19 @@ async function listDirectory(
 ): Promise<DirectoryListing> {
   const entries = await Promise.all((await readdir(directory, { withFileTypes: true })).map(async dirent => {
     if (dirent.name.startsWith('.')) return
-    const item = resolve(directory, dirent.name)
-    if (item === cache) return
     const childPath = path ? `${path}/${dirent.name}` : dirent.name
+    const link = dirent.isSymbolicLink()
+    const item = link ? await resolveEntry(root, childPath).catch(() => undefined) : resolve(directory, dirent.name)
+    if (!item || inside(cache, item)) return
     if (dirent.isDirectory()) return { kind: 'folder', name: dirent.name, path: childPath } as const
-    if (!dirent.isFile()) return
+    if (!link && !dirent.isFile()) return
 
     const format = formats[extname(dirent.name).toLowerCase()]
-    if (!format) return
+    if (!link && !format) return
 
     const info = await stat(item).catch(() => undefined)
-    if (!info?.isFile()) return
+    if (link && info?.isDirectory()) return { kind: 'folder', name: dirent.name, path: childPath } as const
+    if (!format || !info?.isFile()) return
     return { kind: format[0], name: dirent.name, path: childPath, version: version(info), bytes: info.size }
   }))
   return {
